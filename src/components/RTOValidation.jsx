@@ -1,6 +1,14 @@
+/**
+ * RTOValidation — SLA progress table
+ *
+ * Shows only Switchover and Switchback phases — Readiness has NO SLA
+ * and is intentionally excluded from all RTO calculations.
+ */
+
 import { useState, useEffect } from 'react'
-import { BarChart2, CheckCircle2, XCircle, AlertTriangle, Clock } from 'lucide-react'
+import { BarChart2, CheckCircle2, XCircle, AlertTriangle, Clock, ShieldCheck } from 'lucide-react'
 import { useT } from '../context/ThemeContext'
+import { useSettings } from '../context/SettingsContext'
 
 const RTO_COLORS = {
   'On Track': { bar: '#4ade80', text: 'text-green-400',  bg: 'bg-green-500/10',  border: 'border-green-500/30'  },
@@ -14,7 +22,6 @@ const RTO_COLORS = {
 const PHASE_COLORS = {
   switchover: '#38bdf8',
   switchback: '#818cf8',
-  readiness:  '#34d399',
 }
 
 function useLiveElapsed(startISO, isRunning) {
@@ -30,13 +37,9 @@ function useLiveElapsed(startISO, isRunning) {
   return mins
 }
 
-function fmt(iso) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
 function RtoRow({ app, phase, data }) {
-  const t = useT()
+  const t           = useT()
+  const { fmtTime } = useSettings()
   const isRunning   = data?.status === 'Executing'
   const liveElapsed = useLiveElapsed(isRunning ? data?.startTimeISO : null, isRunning)
 
@@ -52,15 +55,10 @@ function RtoRow({ app, phase, data }) {
     )
   }
 
-  const elapsed   = isRunning ? liveElapsed : data.elapsedMins
+  const elapsed   = isRunning ? liveElapsed : (data.elapsedMins ?? 0)
   const target    = data.rtoTargetMins
   const pct       = target > 0 ? Math.min(200, Math.round((elapsed / target) * 100)) : 0
-  const rtoStatus =
-    data.status === 'Ended OK'     ? (elapsed <= target ? 'Met' : 'Missed')
-    : data.status === 'Ended Not OK' ? 'Missed'
-    : pct >= 100 ? 'Breached'
-    : pct >= 80  ? 'At Risk'
-    : 'On Track'
+  const rtoStatus = data.rtoStatus || 'N/A'
 
   const c        = RTO_COLORS[rtoStatus] || RTO_COLORS['N/A']
   const barFill  = PHASE_COLORS[phase] || '#64748b'
@@ -84,9 +82,14 @@ function RtoRow({ app, phase, data }) {
           {data.status}
         </span>
       </td>
-      <td className={`px-4 py-3 text-xs font-mono ${t.textMuted}`}>{fmt(data.startTimeISO)}</td>
+      <td className={`px-4 py-3 text-xs font-mono ${t.textMuted}`}>
+        {fmtTime(data.startTimeISO, { second: undefined }) || '—'}
+      </td>
       <td className={`px-4 py-3 text-xs font-mono whitespace-nowrap ${t.textSub}`}>
-        {fmt(data.estEndISO)}<span className={`ml-1 ${t.textFaint}`}>(+{target}m)</span>
+        {data.estEndISO
+          ? fmtTime(data.estEndISO, { second: undefined })
+          : target ? `+${target}m` : '—'}
+        {target && <span className={`ml-1 ${t.textFaint}`}>(SLA {target}m)</span>}
       </td>
       {/* RTO bar */}
       <td className="px-4 py-3 min-w-[180px]">
@@ -108,11 +111,11 @@ function RtoRow({ app, phase, data }) {
       </td>
       <td className="px-4 py-3">
         <span className={`text-xs px-2 py-0.5 rounded border ${c.bg} ${c.border} ${c.text}`}>
-          {rtoStatus === 'Met'      && <CheckCircle2 className="inline w-3 h-3 mr-1" />}
-          {rtoStatus === 'Missed'   && <XCircle      className="inline w-3 h-3 mr-1" />}
-          {rtoStatus === 'Breached' && <XCircle      className="inline w-3 h-3 mr-1" />}
+          {rtoStatus === 'Met'      && <CheckCircle2  className="inline w-3 h-3 mr-1" />}
+          {rtoStatus === 'Missed'   && <XCircle       className="inline w-3 h-3 mr-1" />}
+          {rtoStatus === 'Breached' && <XCircle       className="inline w-3 h-3 mr-1" />}
           {rtoStatus === 'At Risk'  && <AlertTriangle className="inline w-3 h-3 mr-1" />}
-          {rtoStatus === 'On Track' && <Clock         className="inline w-3 h-3 mr-1" />}
+          {rtoStatus === 'On Track' && <Clock          className="inline w-3 h-3 mr-1" />}
           {rtoStatus}
         </span>
       </td>
@@ -120,15 +123,11 @@ function RtoRow({ app, phase, data }) {
   )
 }
 
-function SummaryStrip({ operations }) {
-  const allPhases = operations.flatMap(({ app, phases }) =>
-    ['switchover', 'switchback', 'readiness'].map((ph) => ({ app, phase: ph, data: phases[ph] }))
-  ).filter((r) => r.data)
-
-  const on   = allPhases.filter((r) => r.data.rtoStatus === 'On Track').length
-  const risk = allPhases.filter((r) => r.data.rtoStatus === 'At Risk').length
-  const bad  = allPhases.filter((r) => ['Breached','Missed'].includes(r.data.rtoStatus)).length
-  const met  = allPhases.filter((r) => r.data.rtoStatus === 'Met').length
+function SummaryStrip({ rows }) {
+  const on   = rows.filter((r) => r.data?.rtoStatus === 'On Track').length
+  const risk = rows.filter((r) => r.data?.rtoStatus === 'At Risk').length
+  const bad  = rows.filter((r) => ['Breached','Missed'].includes(r.data?.rtoStatus)).length
+  const met  = rows.filter((r) => r.data?.rtoStatus === 'Met').length
 
   return (
     <div className="flex gap-4 flex-wrap">
@@ -152,9 +151,12 @@ export default function RTOValidation({ operations }) {
   const t = useT()
   if (!operations?.length) return null
 
+  // ── Readiness is EXCLUDED — only Switchover and Switchback have SLA ──
   const rows = operations.flatMap(({ app, phases }) =>
-    ['switchover', 'switchback', 'readiness'].map((ph) => ({ app, phase: ph, data: phases[ph] }))
+    ['switchover', 'switchback'].map((ph) => ({ app, phase: ph, data: phases[ph] }))
   )
+
+  const configuredRows = rows.filter((r) => r.data)
 
   return (
     <div className={`${t.card} border ${t.border} rounded-xl p-5 flex flex-col gap-4`}>
@@ -163,12 +165,15 @@ export default function RTOValidation({ operations }) {
           <div className="flex items-center gap-2">
             <BarChart2 className="w-4 h-4 text-blue-400" />
             <h2 className={`text-sm font-semibold ${t.text}`}>RTO Validation</h2>
+            <span className={`text-xs px-2 py-0.5 rounded border border-slate-600 ${t.textFaint}`}>
+              Switchover &amp; Switchback only
+            </span>
           </div>
           <p className={`text-xs mt-0.5 ${t.textMuted}`}>
-            Fixed SLA deadline vs actual elapsed time — per application &amp; phase
+            Fixed SLA deadline vs actual elapsed time — Readiness has no SLA target
           </p>
         </div>
-        <SummaryStrip operations={operations} />
+        <SummaryStrip rows={configuredRows} />
       </div>
 
       {/* Phase colour legend */}
@@ -187,6 +192,10 @@ export default function RTOValidation({ operations }) {
           <span className="inline-block w-0.5 h-3 bg-white/25" />
           <span className={t.textMuted}>Deadline marker</span>
         </span>
+        <span className={`flex items-center gap-1.5 ml-3 text-emerald-400`}>
+          <ShieldCheck className="w-3 h-3" />
+          <span>Readiness: no SLA</span>
+        </span>
       </div>
 
       {/* Table */}
@@ -194,7 +203,7 @@ export default function RTOValidation({ operations }) {
         <table className="w-full text-xs min-w-[740px]">
           <thead className={`${t.tableHead} ${t.textMuted} sticky top-0`}>
             <tr>
-              {['Application','Phase','Job Status','Start Time','SLA Deadline','RTO Progress','SLA Status'].map((h) => (
+              {['Application', 'Phase', 'Job Status', 'Start Time', 'SLA Deadline', 'RTO Progress', 'SLA Status'].map((h) => (
                 <th key={h} className="text-left px-4 py-2.5 font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -209,3 +218,4 @@ export default function RTOValidation({ operations }) {
     </div>
   )
 }
+

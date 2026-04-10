@@ -1,14 +1,21 @@
-import { RefreshCw, Shield, Clock, Sun, Moon, FileSpreadsheet } from 'lucide-react'
+import { RefreshCw, Shield, Clock, Sun, Moon, FileSpreadsheet, Settings } from 'lucide-react'
 import { useTheme, useT } from '../context/ThemeContext'
+import { useSettings } from '../context/SettingsContext'
 
 const IS_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
-export default function Header({ lastRefresh, autoRefresh, onToggleAuto, onRefresh, loading, onLogout, onReport, hasData }) {
+export default function Header({
+  lastRefresh, autoRefresh, onToggleAuto,
+  onRefresh, loading, onLogout, onReport, hasData, onSettings,
+}) {
   const { dark, toggle } = useTheme()
   const t = useT()
+  const { settings, fmtTime } = useSettings()
+
+  const dashboardTitle = settings.customerName?.trim() || 'Resiliency Dashboard'
 
   const formattedTime = lastRefresh
-    ? lastRefresh.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    ? fmtTime(lastRefresh.toISOString())
     : '--:--:--'
 
   return (
@@ -17,12 +24,21 @@ export default function Header({ lastRefresh, autoRefresh, onToggleAuto, onRefre
 
         {/* Left: Branding */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-blue-600/20 border border-blue-500/30 flex-shrink-0">
-            <Shield className="w-5 h-5 text-blue-400" />
-          </div>
+          {/* Customer logo or default shield icon */}
+          {settings.customerLogo ? (
+            <img
+              src={settings.customerLogo}
+              alt="Customer logo"
+              className="h-9 max-w-[120px] object-contain rounded"
+            />
+          ) : (
+            <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-blue-600/20 border border-blue-500/30 flex-shrink-0">
+              <Shield className="w-5 h-5 text-blue-400" />
+            </div>
+          )}
           <div>
             <h1 className={`text-lg font-semibold leading-tight ${t.text}`}>
-              Control‑M DR Dashboard
+              {dashboardTitle}
             </h1>
             <p className={`text-xs ${t.textMuted}`}>
               Disaster Recovery · Switchover · Switchback · Readiness
@@ -78,6 +94,15 @@ export default function Header({ lastRefresh, autoRefresh, onToggleAuto, onRefre
             className={`p-1.5 rounded-lg border transition-colors ${t.card} ${t.border} ${t.textMuted} hover:opacity-80`}
           >
             {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+
+          {/* Settings */}
+          <button
+            onClick={onSettings}
+            title="Open settings"
+            className={`p-1.5 rounded-lg border transition-colors ${t.card} ${t.border} ${t.textMuted} hover:opacity-80`}
+          >
+            <Settings className="w-4 h-4" />
           </button>
 
           {/* Generate Report */}

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import {
-  CheckCircle2, XCircle, AlertTriangle, Zap,
+  CheckCircle2, XCircle, AlertTriangle, Zap, Pin, PinOff,
   ArrowRightLeft, ArrowLeftRight, ShieldCheck,
   ChevronDown, ChevronUp, ExternalLink,
 } from 'lucide-react'
 import { useT } from '../context/ThemeContext'
+import { useSettings } from '../context/SettingsContext'
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
 
@@ -81,16 +82,17 @@ function RtoBar({ elapsed, target, rtoStatus }) {
 // ─── Phase card ───────────────────────────────────────────────────────────────
 
 const PHASE_META = {
-  switchover: { icon: ArrowRightLeft, label: 'Switchover' },
-  switchback: { icon: ArrowLeftRight, label: 'Switchback' },
-  readiness:  { icon: ShieldCheck,    label: 'Readiness'  },
+  switchover: { icon: ArrowRightLeft, label: 'Switchover', hasSla: true  },
+  switchback: { icon: ArrowLeftRight, label: 'Switchback', hasSla: true  },
+  readiness:  { icon: ShieldCheck,    label: 'Readiness',  hasSla: false },
 }
 
 function PhaseCard({ phase, data }) {
   const t           = useT()
+  const { fmtTime } = useSettings()
   const isRunning   = data?.status === 'Executing'
   const liveElapsed = useElapsed(isRunning ? data?.startTimeISO : null, isRunning)
-  const { icon: Icon, label } = PHASE_META[phase]
+  const { icon: Icon, label, hasSla } = PHASE_META[phase]
 
   if (!data) {
     return (
@@ -102,26 +104,28 @@ function PhaseCard({ phase, data }) {
     )
   }
 
-  const elapsed   = isRunning ? liveElapsed : data.elapsedMins
-  const target    = data.rtoTargetMins
-  const pct       = target > 0 ? Math.min(200, Math.round((elapsed / target) * 100)) : 0
-  const rtoStatus =
-    data.status === 'Ended OK'
-      ? (elapsed <= target ? 'Met' : 'Missed')
-      : data.status === 'Ended Not OK'
-      ? 'Missed'
-      : pct >= 100 ? 'Breached'
-      : pct >= 80  ? 'At Risk'
-      : 'On Track'
-  const c = rtoColors(rtoStatus)
+  const elapsed    = isRunning ? liveElapsed : (data.elapsedMins ?? 0)
+  const target     = data.rtoTargetMins
+  const pct        = hasSla && target > 0 ? Math.min(200, Math.round((elapsed / target) * 100)) : 0
+  const rtoStatus  = data.rtoStatus || 'N/A'
+  const c          = rtoColors(rtoStatus)
+
+  // For readiness: use neutral border/bg
+  const cardRing = hasSla ? c.ring : (data.status === 'Ended OK' ? 'border-green-500/30' : data.status === 'Ended Not OK' ? 'border-red-500/30' : 'border-emerald-500/20')
+  const cardBg   = hasSla ? c.bg   : (data.status === 'Ended OK' ? 'bg-green-500/5' : data.status === 'Ended Not OK' ? 'bg-red-500/5' : 'bg-emerald-500/5')
 
   return (
-    <div className={`flex flex-col gap-3 border rounded-lg p-3 ${c.ring} ${c.bg}`}>
+    <div className={`flex flex-col gap-3 border rounded-lg p-3 ${cardRing} ${cardBg}`}>
       {/* Phase header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <span className={c.text}><Icon className="w-4 h-4" /></span>
+          <span className={hasSla ? c.text : 'text-emerald-400'}><Icon className="w-4 h-4" /></span>
           <span className={`text-xs font-semibold ${t.text}`}>{label}</span>
+          {!hasSla && (
+            <span className="text-xs px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+              No SLA
+            </span>
+          )}
         </div>
         <span className={`text-xs px-1.5 py-0.5 rounded border ${statusPill(data.status)}`}>
           {isRunning && <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse mr-1 align-middle" />}
@@ -137,23 +141,44 @@ function PhaseCard({ phase, data }) {
         <div>
           <p className={t.textMuted}>Started</p>
           <p className={`font-mono mt-0.5 ${t.textSub}`}>
-            {data.startTimeISO
-              ? new Date(data.startTimeISO).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-              : '—'}
+            {fmtTime(data.startTimeISO, { second: undefined }) || '—'}
           </p>
         </div>
-        <div>
-          <p className={t.textMuted}>SLA Deadline</p>
-          <p className={`font-mono mt-0.5 ${c.text}`}>
-            {data.estEndISO
-              ? new Date(data.estEndISO).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-              : `+${target}m`}
-          </p>
-        </div>
+        {hasSla ? (
+          <div>
+            <p className={t.textMuted}>SLA Deadline</p>
+            <p className={`font-mono mt-0.5 ${c.text}`}>
+              {data.estEndISO
+                ? fmtTime(data.estEndISO, { second: undefined })
+                : target ? `+${target}m` : '—'}
+            </p>
+          </div>
+        ) : (
+          <div>
+            <p className={t.textMuted}>Ended</p>
+            <p className={`font-mono mt-0.5 ${t.textSub}`}>
+              {data.endTimeISO ? fmtTime(data.endTimeISO, { second: undefined }) : isRunning ? 'Running…' : '—'}
+            </p>
+          </div>
+        )}
       </div>
 
-      {/* RTO bar */}
-      <RtoBar elapsed={elapsed} target={target} rtoStatus={rtoStatus} />
+      {/* Elapsed row (always shown) */}
+      <div className="text-xs flex items-center justify-between">
+        <span className={t.textMuted}>
+          Duration: <span className={`font-mono ${t.textSub}`}>{elapsed}m</span>
+        </span>
+        {data.endTimeISO && (
+          <span className="text-xs px-1.5 py-0.5 rounded border border-green-500/30 bg-green-500/10 text-green-400">
+            Complete
+          </span>
+        )}
+      </div>
+
+      {/* RTO bar — only for SLA phases */}
+      {hasSla && target && (
+        <RtoBar elapsed={elapsed} target={target} rtoStatus={rtoStatus} />
+      )}
 
       {/* Log */}
       {data.logURI && (
@@ -170,37 +195,50 @@ function PhaseCard({ phase, data }) {
 
 export default function AppDRCard({ operation }) {
   const t = useT()
+  const { settings, togglePin } = useSettings()
   const {
     app, server, phases, totalPhases, completedPhases, failedPhases,
     overallStatus, drillHealth, completionPct,
   } = operation
 
   const [expanded, setExpanded] = useState(true)
-  const badge = headerBadgeClass(overallStatus, drillHealth)
+  const badge    = headerBadgeClass(overallStatus, drillHealth)
+  const isPinned = settings.pinnedApps?.includes(app)
 
   const HealthIcon =
-    drillHealth === 'Breached' || drillHealth === 'Failed' ? XCircle
-    : drillHealth === 'At Risk' ? AlertTriangle
+    drillHealth === 'Breached' || overallStatus === 'Failed' ? XCircle
+    : drillHealth === 'At Risk'  ? AlertTriangle
     : overallStatus === 'Completed' ? CheckCircle2
     : Zap
 
   return (
-    <div className={`${t.card} border ${t.border} rounded-xl overflow-hidden`}>
+    <div className={`${t.card} border ${t.border} rounded-xl overflow-hidden ${isPinned ? 'ring-1 ring-blue-500/40' : ''}`}>
+
+      {/* Pinned indicator strip */}
+      {isPinned && (
+        <div className="h-0.5 bg-gradient-to-r from-blue-600 via-blue-400 to-transparent" />
+      )}
 
       {/* Header */}
-      <button
-        onClick={() => setExpanded((p) => !p)}
-        className={`w-full flex items-center justify-between px-5 py-4 ${t.cardHover} transition-colors`}
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
-            <span className="text-xs font-bold text-blue-400">{app.slice(0, 2).toUpperCase()}</span>
+      <div className="flex items-center justify-between px-5 py-4">
+        {/* Clickable area (expand/collapse) */}
+        <button
+          onClick={() => setExpanded((p) => !p)}
+          className="flex items-center gap-3 flex-1 text-left"
+        >
+          <div className={`w-8 h-8 rounded-lg border flex items-center justify-center flex-shrink-0 ${
+            isPinned ? 'bg-blue-600/30 border-blue-500/40' : 'bg-blue-600/20 border-blue-500/30'
+          }`}>
+            {isPinned
+              ? <Pin className="w-3.5 h-3.5 text-blue-400" />
+              : <span className="text-xs font-bold text-blue-400">{app.slice(0, 2).toUpperCase()}</span>
+            }
           </div>
           <div className="text-left">
             <p className={`text-sm font-semibold ${t.text}`}>{app}</p>
             <p className={`text-xs font-mono ${t.textFaint}`}>Server: {server}</p>
           </div>
-        </div>
+        </button>
 
         <div className="flex items-center gap-2 flex-wrap">
           {/* Phase status dots */}
@@ -224,11 +262,29 @@ export default function AppDRCard({ operation }) {
             {drillHealth}
           </span>
           <span className={`text-xs font-mono ${t.textMuted}`}>{completedPhases}/{totalPhases}</span>
-          {expanded
-            ? <ChevronUp className={`w-4 h-4 ${t.textFaint}`} />
-            : <ChevronDown className={`w-4 h-4 ${t.textFaint}`} />}
+
+          {/* Pin toggle */}
+          <button
+            onClick={(e) => { e.stopPropagation(); togglePin(app) }}
+            title={isPinned ? 'Unpin application' : 'Pin to top'}
+            className={`p-1 rounded transition-colors ${
+              isPinned ? 'text-blue-400 hover:text-blue-300' : `${t.textFaint} hover:text-blue-400`
+            }`}
+          >
+            {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+          </button>
+
+          {/* Expand toggle */}
+          <button
+            onClick={() => setExpanded((p) => !p)}
+            className={`${t.textFaint}`}
+          >
+            {expanded
+              ? <ChevronUp className="w-4 h-4" />
+              : <ChevronDown className="w-4 h-4" />}
+          </button>
         </div>
-      </button>
+      </div>
 
       {/* Completion bar */}
       <div className={`h-0.5 ${t.border}`}>

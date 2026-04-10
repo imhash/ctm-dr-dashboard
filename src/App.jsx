@@ -6,14 +6,18 @@ import RTOValidation     from './components/RTOValidation'
 import AgentConnectivity from './components/AgentConnectivity'
 import LoginPage         from './components/LoginPage'
 import DrillReportModal  from './components/DrillReportModal'
+import SettingsPanel     from './components/SettingsPanel'
 import { useT }          from './context/ThemeContext'
+import { useSettings }   from './context/SettingsContext'
 import { fetchDROperations, fetchAgents } from './services/controlmApi'
 
-const REFRESH_MS = 30_000
+const REFRESH_MS  = 30_000
 const SESSION_KEY = 'ctm-session'
 
 function Dashboard({ onLogout }) {
   const t = useT()
+  const { settings } = useSettings()
+
   const [loading,      setLoading]      = useState(true)
   const [operations,   setOperations]   = useState([])
   const [agents,       setAgents]       = useState([])
@@ -21,12 +25,17 @@ function Dashboard({ onLogout }) {
   const [autoRefresh,  setAutoRefresh]  = useState(true)
   const [error,        setError]        = useState(null)
   const [showReport,   setShowReport]   = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [ops, agt] = await Promise.all([fetchDROperations(), fetchAgents()])
+      // Pass current SLA config so buildPhase uses user-defined deadlines
+      const [ops, agt] = await Promise.all([
+        fetchDROperations(settings.sla),
+        fetchAgents(),
+      ])
       setOperations(ops)
       setAgents(agt)
       setLastRefresh(new Date())
@@ -36,7 +45,7 @@ function Dashboard({ onLogout }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [settings.sla])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -46,10 +55,27 @@ function Dashboard({ onLogout }) {
     return () => clearInterval(id)
   }, [autoRefresh, loadAll])
 
+  // Sort operations: pinned apps first (in pin order), then alphabetical
+  const pinnedApps = settings.pinnedApps || []
+  const sortedOps  = [...operations].sort((a, b) => {
+    const ai = pinnedApps.indexOf(a.app)
+    const bi = pinnedApps.indexOf(b.app)
+    if (ai !== -1 && bi !== -1) return ai - bi   // both pinned: preserve pin order
+    if (ai !== -1) return -1                      // a pinned, b not
+    if (bi !== -1) return 1                       // b pinned, a not
+    return a.app.localeCompare(b.app)             // neither pinned: alphabetical
+  })
+
+  const appNames = operations.map((o) => o.app)
+
   return (
     <div className={`min-h-screen flex flex-col ${t.pageBg}`}>
+      {/* ── Modals / Panels ── */}
       {showReport && (
         <DrillReportModal operations={operations} onClose={() => setShowReport(false)} />
+      )}
+      {showSettings && (
+        <SettingsPanel appNames={appNames} onClose={() => setShowSettings(false)} />
       )}
 
       <Header
@@ -60,6 +86,7 @@ function Dashboard({ onLogout }) {
         loading={loading}
         onLogout={onLogout}
         onReport={() => setShowReport(true)}
+        onSettings={() => setShowSettings(true)}
         hasData={operations.length > 0}
       />
 
@@ -89,9 +116,14 @@ function Dashboard({ onLogout }) {
               <span className={`text-xs px-2.5 py-0.5 rounded-full border ${t.border} ${t.textMuted}`}>
                 Switchover · Switchback · Readiness — grouped by CTM Application
               </span>
+              {pinnedApps.length > 0 && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full border border-blue-500/30 text-blue-400 bg-blue-500/10">
+                  {pinnedApps.length} pinned
+                </span>
+              )}
             </div>
 
-            {operations.length === 0 ? (
+            {sortedOps.length === 0 ? (
               <div className={`text-center py-16 text-sm ${t.textMuted}`}>
                 No DR operations found.<br />
                 <span className={`text-xs ${t.textFaint}`}>
@@ -100,12 +132,12 @@ function Dashboard({ onLogout }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                {operations.map((op) => <AppDRCard key={op.app} operation={op} />)}
+                {sortedOps.map((op) => <AppDRCard key={op.app} operation={op} />)}
               </div>
             )}
           </section>
 
-          {/* ── RTO Validation ── */}
+          {/* ── RTO Validation (Switchover + Switchback only) ── */}
           {operations.length > 0 && (
             <section className="px-6 pb-4">
               <RTOValidation operations={operations} />
@@ -124,13 +156,11 @@ function Dashboard({ onLogout }) {
 }
 
 export default function App() {
-  // Auth state — persisted in sessionStorage (cleared on tab close)
   const [session, setSession] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(SESSION_KEY)) } catch { return null }
   })
 
   function handleLogin(creds) {
-    // Store only non-sensitive metadata; API key lives in env var (proxy handles it)
     const s = { apiUrl: creds.apiUrl, loggedInAt: new Date().toISOString() }
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
     setSession(s)

@@ -8,6 +8,12 @@
  *   VITE_CTM_API_URL  — proxy base path  (default: /ctm-api)
  *   VITE_CTM_API_KEY  — base64 API key
  *   VITE_USE_MOCK     — "true" to use local mock data
+ *
+ * SLA NOTE:
+ *   - estimatedEndTime from CTM API is unreliable (often returns []).
+ *   - SLA deadlines are computed as: startTime + user-configured SLA target (minutes).
+ *   - Readiness phase has NO SLA — all RTO fields are null for readiness.
+ *   - slaConfig is passed in from the app settings (useSettings hook).
  */
 
 import {
@@ -64,38 +70,53 @@ function diffMins(a, b) {
   return Math.round((b.getTime() - a.getTime()) / 60000)
 }
 
-// ---------- SLA Deadlines (minutes from start) ----------
-// In a full CTM setup these come from the job's "Deadline" attribute.
-// Here we define them as the time delta from startTime → estimatedEndTime,
-// cross-checked against standard DR SLA targets:
-//   Switchover : 30 min
-//   Switchback : 60 min
-//   Readiness  : 60 min
-
-const SLA_DEFAULTS = { switchover: 30, switchback: 60, readiness: 60 }
-
 // ---------- Phase builder ----------
+//
+// slaTargetMins:
+//   null  → Readiness phase (no SLA — skip all RTO calculations)
+//   number → SLA deadline = startTime + slaTargetMins
+//
+// NOTE: estimatedEndTime from the CTM API is NOT used because it returns []
+//       empty in the SaaS environment. The deadline is derived from user-configured SLA.
 
-function buildPhase(raw, phase) {
+function buildPhase(raw, phase, slaTargetMins) {
   if (!raw) return null
 
-  const start    = parseCtmTime(raw.startTime)
-  const end      = raw.endTime ? parseCtmTime(raw.endTime) : null
-  const estEnd   = raw.estimatedEndTime?.[0] ? parseCtmTime(raw.estimatedEndTime[0]) : null
+  const start = parseCtmTime(raw.startTime)
+  const end   = raw.endTime ? parseCtmTime(raw.endTime) : null
+  const hasSLA = slaTargetMins != null && phase !== 'readiness'
 
-  // RTO target = estEnd - start (from CTM) or fallback to SLA default
-  const rtoTargetMins =
-    start && estEnd
-      ? Math.max(1, diffMins(start, estEnd))
-      : SLA_DEFAULTS[phase] ?? 60
-
-  // Elapsed = now (or actual end) - start
   const now         = new Date()
   const refEnd      = end || now
   const elapsedMins = start ? Math.max(0, diffMins(start, refEnd)) : 0
 
-  const rtoPct      = Math.round((elapsedMins / rtoTargetMins) * 100)
-  const rtoBreached = elapsedMins > rtoTargetMins && !end  // still running past deadline
+  if (!hasSLA) {
+    // Readiness: return phase data without any RTO metrics
+    return {
+      jobId:        raw.jobId,
+      name:         raw.name,
+      folder:       raw.folder,
+      status:       raw.status,
+      held:         raw.held,
+      startTimeISO: start ? start.toISOString() : null,
+      endTimeISO:   end   ? end.toISOString()   : null,
+      estEndISO:    null,           // no deadline for readiness
+      hasSLA:       false,
+      rtoTargetMins:  null,
+      elapsedMins,
+      rtoPct:       null,
+      rtoStatus:    'N/A',
+      rtoBreached:  false,
+      logURI:       raw.logURI || null,
+    }
+  }
+
+  // SLA phase: compute deadline from startTime + slaTargetMins
+  const rtoTargetMins = Number(slaTargetMins)
+  const deadline      = start ? new Date(start.getTime() + rtoTargetMins * 60_000) : null
+
+  const rtoPct      = rtoTargetMins > 0 ? Math.round((elapsedMins / rtoTargetMins) * 100) : 0
+  const rtoBreached = !end && elapsedMins > rtoTargetMins   // still running past deadline
   const rtoStatus   =
     end
       ? (elapsedMins <= rtoTargetMins ? 'Met' : 'Missed')
@@ -106,28 +127,33 @@ function buildPhase(raw, phase) {
       : 'On Track'
 
   return {
-    jobId:         raw.jobId,
-    name:          raw.name,
-    folder:        raw.folder,
-    status:        raw.status,
-    held:          raw.held,
-    startTimeISO:  start ? start.toISOString() : null,
-    endTimeISO:    end   ? end.toISOString()   : null,
-    estEndISO:     estEnd ? estEnd.toISOString() : null,
+    jobId:        raw.jobId,
+    name:         raw.name,
+    folder:       raw.folder,
+    status:       raw.status,
+    held:         raw.held,
+    startTimeISO: start    ? start.toISOString()    : null,
+    endTimeISO:   end      ? end.toISOString()      : null,
+    estEndISO:    deadline ? deadline.toISOString() : null,   // SLA deadline
+    hasSLA:       true,
     rtoTargetMins,
     elapsedMins,
-    rtoPct:        Math.min(200, rtoPct),   // cap at 200% for display
+    rtoPct:       Math.min(200, rtoPct),
     rtoStatus,
     rtoBreached,
-    logURI:        raw.logURI || null,
+    logURI:       raw.logURI || null,
   }
 }
 
-// ---------- DR Operations (main new function) ----------
+// ---------- DR Operations ----------
 
 const DR_PHASES = new Set(['switchover', 'switchback', 'readiness'])
 
-function rawJobsToDROperations(statuses) {
+/**
+ * @param {Array}  statuses   — raw CTM job status array
+ * @param {object} slaConfig  — { switchover: number, switchback: number, perApp: { [app]: { switchover, switchback } } }
+ */
+function rawJobsToDROperations(statuses, slaConfig = {}) {
   const drJobs = statuses.filter(
     (j) => DR_PHASES.has((j.subApplication || '').toLowerCase())
   )
@@ -137,46 +163,54 @@ function rawJobsToDROperations(statuses) {
     const app   = j.application || 'Unknown'
     const phase = (j.subApplication || '').toLowerCase()
     if (!byApp[app]) {
-      byApp[app] = { app, server: j.ctm, switchover: null, switchback: null, readiness: null, rawJobs: [] }
+      byApp[app] = { app, server: j.ctm, switchover: null, switchback: null, readiness: null }
     }
-    byApp[app][phase]  = j
-    byApp[app].rawJobs.push(j)
+    byApp[app][phase] = j
   }
 
   return Object.values(byApp).map((entry) => {
-    const phases = {
-      switchover: buildPhase(entry.switchover, 'switchover'),
-      switchback: buildPhase(entry.switchback, 'switchback'),
-      readiness:  buildPhase(entry.readiness,  'readiness'),
+    // Resolve SLA targets per app + phase (readiness always gets null)
+    function getSLA(phase) {
+      if (phase === 'readiness') return null
+      const perApp = slaConfig.perApp?.[entry.app]
+      if (perApp?.[phase] != null) return Number(perApp[phase])
+      return slaConfig[phase] != null ? Number(slaConfig[phase]) : (phase === 'switchover' ? 30 : 60)
     }
 
-    const allPhases     = Object.values(phases).filter(Boolean)
-    const totalPhases   = allPhases.length
-    const completedPh   = allPhases.filter((p) => p.status === 'Ended OK').length
-    const failedPh      = allPhases.filter((p) => p.status === 'Ended Not OK').length
-    const executingPh   = allPhases.filter((p) => p.status === 'Executing').length
-    const breachedPh    = allPhases.filter((p) => p.rtoBreached).length
-    const atRiskPh      = allPhases.filter((p) => p.rtoStatus === 'At Risk').length
+    const phases = {
+      switchover: buildPhase(entry.switchover, 'switchover', getSLA('switchover')),
+      switchback: buildPhase(entry.switchback, 'switchback', getSLA('switchback')),
+      readiness:  buildPhase(entry.readiness,  'readiness',  null),
+    }
+
+    const allPhases    = Object.values(phases).filter(Boolean)
+    const totalPhases  = allPhases.length
+    const completedPh  = allPhases.filter((p) => p.status === 'Ended OK').length
+    const failedPh     = allPhases.filter((p) => p.status === 'Ended Not OK').length
+    const executingPh  = allPhases.filter((p) => p.status === 'Executing').length
+
+    // Health is only assessed on SLA phases (switchover + switchback)
+    const slaPhases    = allPhases.filter((p) => p.hasSLA)
+    const breachedPh   = slaPhases.filter((p) => p.rtoBreached).length
+    const atRiskPh     = slaPhases.filter((p) => p.rtoStatus === 'At Risk').length
 
     const overallStatus =
-      failedPh > 0       ? 'Failed'
-      : completedPh === totalPhases ? 'Completed'
-      : executingPh > 0  ? 'In Progress'
+      failedPh > 0                   ? 'Failed'
+      : completedPh === totalPhases  ? 'Completed'
+      : executingPh > 0              ? 'In Progress'
       : 'Pending'
 
     const drillHealth =
       breachedPh > 0 ? 'Breached'
-      : atRiskPh  > 0 ? 'At Risk'
+      : atRiskPh > 0 ? 'At Risk'
       : 'On Track'
 
     const completionPct =
-      totalPhases > 0
-        ? Math.round((completedPh / totalPhases) * 100)
-        : 0
+      totalPhases > 0 ? Math.round((completedPh / totalPhases) * 100) : 0
 
     return {
-      app:          entry.app,
-      server:       entry.server,
+      app:             entry.app,
+      server:          entry.server,
       phases,
       totalPhases,
       completedPhases: completedPh,
@@ -190,15 +224,18 @@ function rawJobsToDROperations(statuses) {
   })
 }
 
-export async function fetchDROperations() {
+/**
+ * @param {object} slaConfig — from useSettings().settings.sla
+ */
+export async function fetchDROperations(slaConfig = {}) {
   if (USE_MOCK) {
     return new Promise((r) => setTimeout(() => r(mockDROperations), 450))
   }
   const data = await ctmFetch('/run/jobs/status')
-  return rawJobsToDROperations(data.statuses || [])
+  return rawJobsToDROperations(data.statuses || [], slaConfig)
 }
 
-// ---------- General jobs (secondary panel) ----------
+// ---------- General jobs ----------
 
 function mapJob(raw) {
   return {

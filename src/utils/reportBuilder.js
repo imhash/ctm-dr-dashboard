@@ -2,6 +2,9 @@
  * reportBuilder.js
  * Converts DR operations (from Control-M API) into structured report rows
  * matching the DR Drill Summary Excel template columns.
+ *
+ * NOTE: Readiness phase is included in the report but SLA/RTO columns are left
+ * blank for it — Readiness has no SLA target by design.
  */
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -14,7 +17,7 @@ function fmtDate(iso) {
 function fmtTime(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true })
-      .toUpperCase()                        // e.g. "01:22 PM"
+    .toUpperCase()   // e.g. "01:22 PM"
 }
 
 function fmtDuration(mins) {
@@ -36,7 +39,6 @@ function inferCriticality(rtoMins) {
 }
 
 // Derive downtime = how long the phase was actually running (elapsed)
-// If completed: endTime - startTime. If still running: elapsed from start.
 function downtimeRange(phase) {
   if (!phase) return { start: '', end: '', overall: '' }
   const start = phase.startTimeISO
@@ -52,8 +54,8 @@ function downtimeRange(phase) {
 // ── Main builder ─────────────────────────────────────────────────────────────
 
 /**
- * Builds a flat array of report rows — one row per application per phase
- * (Switchover, Switchback, Readiness), exactly matching the Excel columns.
+ * Builds a flat array of report rows — one row per application per phase.
+ * Readiness rows are included but SLA/RTO columns are blank (hasSLA = false).
  */
 export function buildReportRows(operations) {
   const rows = []
@@ -71,24 +73,23 @@ export function buildReportRows(operations) {
       if (!ph) continue   // skip unconfigured phases
 
       const downtime = downtimeRange(ph)
-      const rtoH     = Math.floor(ph.rtoTargetMins / 60)
-      const rtoM     = ph.rtoTargetMins % 60
+      const hasSLA   = ph.hasSLA === true   // false for Readiness
 
-      // For readiness phase we report RPO instead of RTO (we use same field here)
-      const rtoHours = rtoH > 0 ? `${rtoH} Hours` : ''
-      const rtoMins  = rtoM > 0 ? `${rtoM} Min`   : ''
+      // RTO columns — only populated for SLA phases
+      const rtoH   = hasSLA && ph.rtoTargetMins ? Math.floor(ph.rtoTargetMins / 60) : null
+      const rtoM   = hasSLA && ph.rtoTargetMins ? ph.rtoTargetMins % 60 : null
+      const rtoHours = rtoH != null && rtoH > 0 ? `${rtoH} Hours` : ''
+      const rtoMins  = rtoM != null && rtoM > 0 ? `${rtoM} Min`   : ''
 
-      // Derive test start/end from the phase window
+      // Test window = phase execution window
       const testStartDate = fmtDate(ph.startTimeISO)
       const testStartTime = fmtTime(ph.startTimeISO)
-      const testEndDate   = fmtDate(ph.estEndISO || ph.endTimeISO)
-      const testEndTime   = fmtTime(ph.estEndISO || ph.endTimeISO)
+      const testEndDate   = fmtDate(ph.endTimeISO || ph.estEndISO)
+      const testEndTime   = fmtTime(ph.endTimeISO || ph.estEndISO)
+      const testDuration  = hasSLA ? fmtDuration(ph.rtoTargetMins) : fmtDuration(ph.elapsedMins)
 
-      // Duration of test window (target RTO)
-      const testDuration  = fmtDuration(ph.rtoTargetMins)
-
-      // SLA status → Overall result
-      const slaStatus     = ph.rtoStatus ?? ''
+      // SLA columns — blank for Readiness
+      const slaStatus     = hasSLA ? (ph.rtoStatus ?? '') : '—'
       const overallResult =
         ph.status === 'Ended OK'     ? 'PASS'
         : ph.status === 'Ended Not OK' ? 'FAIL'
@@ -96,32 +97,32 @@ export function buildReportRows(operations) {
         : 'PENDING'
 
       rows.push({
-        '#':                                         seq++,
-        'Application Name':                          op.app,
-        'Criticality':                               inferCriticality(ph.rtoTargetMins),
-        'Application Type':                          'Internal',           // enrich if available
-        'Service Impact':                            key === 'readiness' ? 'Read Only' : 'Full Outage',
-        'If "Others" — Please Specify':              '',
-        'Dependency on Another System':              '',
-        'Interdependent Systems':                    '',
-        'RTO Agreed (Hours)':                        rtoHours,
-        'RTO Agreed (Min)':                          rtoMins,
-        'Test Start Date':                           testStartDate,
-        'Test Start Time':                           testStartTime,
-        'Test End Date':                             testEndDate,
-        'Test End Time':                             testEndTime,
-        'Test Duration':                             testDuration,
-        'Failover / Failback':                       label,
-        'Downtime Start Time':                       downtime.start,
-        'Downtime End Time':                         downtime.end,
-        'Overall Downtime':                          downtime.overall,
-        'SLA Status':                                slaStatus,
-        'Overall Result':                            overallResult,
-        'CTM Job ID':                                ph.jobId ?? '',
-        'CTM Folder':                                ph.folder ?? '',
-        'CTM Server':                                op.server,
-        'Team Participation':                        '',
-        'Remarks':                                   '',
+        '#':                                    seq++,
+        'Application Name':                     op.app,
+        'Criticality':                          hasSLA ? inferCriticality(ph.rtoTargetMins) : '',
+        'Application Type':                     'Internal',
+        'Service Impact':                       key === 'readiness' ? 'Read Only' : 'Full Outage',
+        'If "Others" — Please Specify':         '',
+        'Dependency on Another System':         '',
+        'Interdependent Systems':               '',
+        'RTO Agreed (Hours)':                   rtoHours,
+        'RTO Agreed (Min)':                     rtoMins,
+        'Test Start Date':                      testStartDate,
+        'Test Start Time':                      testStartTime,
+        'Test End Date':                        testEndDate,
+        'Test End Time':                        testEndTime,
+        'Test Duration':                        testDuration,
+        'Failover / Failback':                  label,
+        'Downtime Start Time':                  downtime.start,
+        'Downtime End Time':                    downtime.end,
+        'Overall Downtime':                     downtime.overall,
+        'SLA Status':                           slaStatus,
+        'Overall Result':                       overallResult,
+        'CTM Job ID':                           ph.jobId ?? '',
+        'CTM Folder':                           ph.folder ?? '',
+        'CTM Server':                           op.server,
+        'Team Participation':                   '',
+        'Remarks':                              key === 'readiness' ? 'No SLA target for Readiness phase' : '',
       })
     }
   }
@@ -132,12 +133,12 @@ export function buildReportRows(operations) {
 // ── Column metadata (for table header rendering + Excel column widths) ───────
 
 export const REPORT_COLUMNS = [
-  { key: '#',                                 label: '#',                          width: 4 },
+  { key: '#',                                 label: '#',                          width: 4  },
   { key: 'Application Name',                  label: 'Application Name',           width: 22 },
   { key: 'Criticality',                       label: 'Criticality',                width: 12 },
   { key: 'Application Type',                  label: 'Application Type',           width: 14 },
   { key: 'Service Impact',                    label: 'Service Impact',             width: 14 },
-  { key: 'If "Others" — Please Specify',      label: 'If "Others" — Specify',     width: 18 },
+  { key: 'If "Others" — Please Specify',      label: 'If "Others" — Specify',      width: 18 },
   { key: 'Dependency on Another System',      label: 'Dependency?',                width: 12 },
   { key: 'Interdependent Systems',            label: 'Interdependent Systems',     width: 20 },
   { key: 'RTO Agreed (Hours)',                label: 'RTO (Hours)',                width: 10 },
