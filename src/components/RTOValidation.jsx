@@ -22,6 +22,8 @@ const RTO_COLORS = {
 const PHASE_COLORS = {
   switchover: '#38bdf8',
   switchback: '#818cf8',
+  failover:   '#fb923c',
+  failback:   '#f472b6',
 }
 
 function useLiveElapsed(startISO, isRunning) {
@@ -151,9 +153,10 @@ export default function RTOValidation({ operations }) {
   const t = useT()
   if (!operations?.length) return null
 
-  // ── Readiness is EXCLUDED — only Switchover and Switchback have SLA ──
+  // ── Readiness is EXCLUDED — only SLA phases have RTO rows ──
   const rows = operations.flatMap(({ app, phases }) =>
-    ['switchover', 'switchback'].map((ph) => ({ app, phase: ph, data: phases[ph] }))
+    ['switchover', 'switchback', 'failover', 'failback']
+      .map((ph) => ({ app, phase: ph, data: phases[ph] }))
   )
 
   const configuredRows = rows.filter((r) => r.data)
@@ -166,7 +169,7 @@ export default function RTOValidation({ operations }) {
             <BarChart2 className="w-4 h-4 text-blue-400" />
             <h2 className={`text-sm font-semibold ${t.text}`}>RTO Validation</h2>
             <span className={`text-xs px-2 py-0.5 rounded border border-slate-600 ${t.textFaint}`}>
-              Switchover &amp; Switchback only
+              SLA phases only — Readiness excluded
             </span>
           </div>
           <p className={`text-xs mt-0.5 ${t.textMuted}`}>
@@ -184,6 +187,10 @@ export default function RTOValidation({ operations }) {
             <span className={`capitalize ${t.textMuted}`}>{ph}</span>
           </span>
         ))}
+        <span className={`flex items-center gap-1.5 ml-3 text-emerald-400 text-xs`}>
+          <ShieldCheck className="w-3 h-3" />
+          <span>Readiness: no SLA</span>
+        </span>
         <span className="flex items-center gap-1.5 ml-3">
           <span className="w-3 h-2 rounded-sm bg-red-500" />
           <span className={t.textMuted}>SLA breach overflow</span>

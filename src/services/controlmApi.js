@@ -1,19 +1,21 @@
 /**
  * Control-M Automation API Service
  *
- * Auth: x-api-key header (base64-encoded API key — no login step needed for SaaS)
+ * Auth: x-api-key header (base64-encoded API key)
  * CORS: Vite dev proxy at /ctm-api → se-preprod-aapi.us1.controlm.com
  *
- * Env vars (.env):
- *   VITE_CTM_API_URL  — proxy base path  (default: /ctm-api)
- *   VITE_CTM_API_KEY  — base64 API key
- *   VITE_USE_MOCK     — "true" to use local mock data
+ * DR Phases (subApplication field values, case-insensitive):
+ *   switchover, switchback, readiness, failover, failback
  *
- * SLA NOTE:
- *   - estimatedEndTime from CTM API is unreliable (often returns []).
- *   - SLA deadlines are computed as: startTime + user-configured SLA target (minutes).
- *   - Readiness phase has NO SLA — all RTO fields are null for readiness.
- *   - slaConfig is passed in from the app settings (useSettings hook).
+ * SLA:
+ *   - SLA deadline = startTime + user-configured minutes (estimatedEndTime is unreliable in SaaS)
+ *   - Readiness has NO SLA
+ *   - slaConfig passed in from useSettings hook
+ *
+ * Step tracking:
+ *   - ALL jobs sharing the same app + subApplication are collected as "steps"
+ *   - Ordered by start time ascending (chronological workflow order)
+ *   - Step count displayed as completedSteps/totalSteps (e.g. 3/12)
  */
 
 import {
@@ -60,65 +62,119 @@ export function parseCtmTime(ts) {
   return isNaN(dt.getTime()) ? null : dt
 }
 
-function ctmIso(ts) {
-  const dt = parseCtmTime(ts)
-  return dt ? dt.toISOString() : null
-}
-
 function diffMins(a, b) {
   if (!a || !b) return null
   return Math.round((b.getTime() - a.getTime()) / 60000)
 }
 
-// ---------- Phase builder ----------
-//
-// slaTargetMins:
-//   null  → Readiness phase (no SLA — skip all RTO calculations)
-//   number → SLA deadline = startTime + slaTargetMins
-//
-// NOTE: estimatedEndTime from the CTM API is NOT used because it returns []
-//       empty in the SaaS environment. The deadline is derived from user-configured SLA.
+// ---------- Step builder ----------
+// Converts a raw CTM job object into a step record (one row in PhaseStepReport)
 
-function buildPhase(raw, phase, slaTargetMins) {
-  if (!raw) return null
-
+function buildStep(raw) {
   const start = parseCtmTime(raw.startTime)
   const end   = raw.endTime ? parseCtmTime(raw.endTime) : null
-  const hasSLA = slaTargetMins != null && phase !== 'readiness'
+  const now   = new Date()
+  const elapsed = start ? Math.max(0, diffMins(start, end || now)) : 0
 
+  // Extract error detail from available fields
+  let errorDetail = null
+  if (raw.status === 'Ended Not OK') {
+    errorDetail = raw.held
+      || raw.statusReason
+      || raw.description
+      || 'Job ended with errors — check CTM output log for details'
+  }
+
+  return {
+    jobId:        raw.jobId,
+    name:         raw.name,
+    folder:       raw.folder,
+    status:       raw.status,
+    held:         raw.held  || null,
+    startTimeISO: start ? start.toISOString() : null,
+    endTimeISO:   end   ? end.toISOString()   : null,
+    elapsedMins:  elapsed,
+    logURI:       raw.logURI || null,
+    errorDetail,
+  }
+}
+
+// ---------- Phase builder ----------
+//
+// Accepts an ARRAY of raw CTM jobs belonging to the same app + phase.
+// Returns a single phase object with step-level detail included.
+//
+// slaTargetMins:
+//   null   → Readiness / no SLA phase — skip RTO calculations
+//   number → SLA deadline = earliest startTime + slaTargetMins
+
+function buildPhaseFromJobs(jobs, phase, slaTargetMins) {
+  if (!jobs || jobs.length === 0) return null
+
+  // Build step records ordered chronologically
+  const steps = jobs
+    .map(buildStep)
+    .sort((a, b) => {
+      const ta = a.startTimeISO ? new Date(a.startTimeISO).getTime() : 0
+      const tb = b.startTimeISO ? new Date(b.startTimeISO).getTime() : 0
+      return ta - tb
+    })
+
+  // Aggregate step counts
+  const totalSteps     = steps.length
+  const completedSteps = steps.filter((s) => s.status === 'Ended OK').length
+  const failedSteps    = steps.filter((s) => s.status === 'Ended Not OK').length
+  const runningSteps   = steps.filter((s) => s.status === 'Executing').length
+
+  // Derive overall phase status (worst-case wins)
+  const overallStatus =
+    failedSteps > 0  ? 'Ended Not OK'
+    : runningSteps > 0 ? 'Executing'
+    : completedSteps === totalSteps ? 'Ended OK'
+    : jobs[0]?.status || 'Unknown'
+
+  // Phase timing: use earliest start and latest end across all steps
+  const starts = steps.map((s) => s.startTimeISO).filter(Boolean).sort()
+  const ends   = steps.map((s) => s.endTimeISO).filter(Boolean).sort()
+  const phaseStart = starts[0] ? new Date(starts[0]) : null
+  const phaseEnd   = ends[ends.length - 1] ? new Date(ends[ends.length - 1]) : null
+
+  // Representative folder/jobId (first step)
+  const folder = steps[0]?.folder  || ''
+  const jobId  = steps[0]?.jobId   || ''
+
+  const hasSLA      = slaTargetMins != null && phase !== 'readiness'
   const now         = new Date()
-  const refEnd      = end || now
-  const elapsedMins = start ? Math.max(0, diffMins(start, refEnd)) : 0
+  const refEnd      = phaseEnd || now
+  const elapsedMins = phaseStart ? Math.max(0, diffMins(phaseStart, refEnd)) : 0
 
   if (!hasSLA) {
-    // Readiness: return phase data without any RTO metrics
     return {
-      jobId:        raw.jobId,
-      name:         raw.name,
-      folder:       raw.folder,
-      status:       raw.status,
-      held:         raw.held,
-      startTimeISO: start ? start.toISOString() : null,
-      endTimeISO:   end   ? end.toISOString()   : null,
-      estEndISO:    null,           // no deadline for readiness
+      jobId, folder, status: overallStatus,
+      startTimeISO: phaseStart ? phaseStart.toISOString() : null,
+      endTimeISO:   phaseEnd   ? phaseEnd.toISOString()   : null,
+      estEndISO:    null,
       hasSLA:       false,
       rtoTargetMins:  null,
       elapsedMins,
       rtoPct:       null,
       rtoStatus:    'N/A',
       rtoBreached:  false,
-      logURI:       raw.logURI || null,
+      steps,
+      totalSteps,
+      completedSteps,
+      failedSteps,
+      runningSteps,
     }
   }
 
-  // SLA phase: compute deadline from startTime + slaTargetMins
+  // SLA phase
   const rtoTargetMins = Number(slaTargetMins)
-  const deadline      = start ? new Date(start.getTime() + rtoTargetMins * 60_000) : null
-
-  const rtoPct      = rtoTargetMins > 0 ? Math.round((elapsedMins / rtoTargetMins) * 100) : 0
-  const rtoBreached = !end && elapsedMins > rtoTargetMins   // still running past deadline
-  const rtoStatus   =
-    end
+  const deadline      = phaseStart ? new Date(phaseStart.getTime() + rtoTargetMins * 60_000) : null
+  const rtoPct        = rtoTargetMins > 0 ? Math.round((elapsedMins / rtoTargetMins) * 100) : 0
+  const rtoBreached   = !phaseEnd && elapsedMins > rtoTargetMins
+  const rtoStatus     =
+    phaseEnd
       ? (elapsedMins <= rtoTargetMins ? 'Met' : 'Missed')
       : rtoBreached
       ? 'Breached'
@@ -127,31 +183,39 @@ function buildPhase(raw, phase, slaTargetMins) {
       : 'On Track'
 
   return {
-    jobId:        raw.jobId,
-    name:         raw.name,
-    folder:       raw.folder,
-    status:       raw.status,
-    held:         raw.held,
-    startTimeISO: start    ? start.toISOString()    : null,
-    endTimeISO:   end      ? end.toISOString()      : null,
-    estEndISO:    deadline ? deadline.toISOString() : null,   // SLA deadline
+    jobId, folder, status: overallStatus,
+    startTimeISO: phaseStart ? phaseStart.toISOString() : null,
+    endTimeISO:   phaseEnd   ? phaseEnd.toISOString()   : null,
+    estEndISO:    deadline   ? deadline.toISOString()   : null,
     hasSLA:       true,
     rtoTargetMins,
     elapsedMins,
     rtoPct:       Math.min(200, rtoPct),
     rtoStatus,
     rtoBreached,
-    logURI:       raw.logURI || null,
+    steps,
+    totalSteps,
+    completedSteps,
+    failedSteps,
+    runningSteps,
   }
 }
 
 // ---------- DR Operations ----------
 
-const DR_PHASES = new Set(['switchover', 'switchback', 'readiness'])
+const DR_PHASES = new Set(['switchover', 'switchback', 'readiness', 'failover', 'failback'])
+
+const EMPTY_BY_PHASE = () => ({
+  switchover: [],
+  switchback: [],
+  readiness:  [],
+  failover:   [],
+  failback:   [],
+})
 
 /**
  * @param {Array}  statuses   — raw CTM job status array
- * @param {object} slaConfig  — { switchover: number, switchback: number, perApp: { [app]: { switchover, switchback } } }
+ * @param {object} slaConfig  — { switchover, switchback, failover, failback, readiness: no SLA, perApp: {...} }
  */
 function rawJobsToDROperations(statuses, slaConfig = {}) {
   const drJobs = statuses.filter(
@@ -163,36 +227,42 @@ function rawJobsToDROperations(statuses, slaConfig = {}) {
     const app   = j.application || 'Unknown'
     const phase = (j.subApplication || '').toLowerCase()
     if (!byApp[app]) {
-      byApp[app] = { app, server: j.ctm, switchover: null, switchback: null, readiness: null }
+      byApp[app] = { app, server: j.ctm, ...EMPTY_BY_PHASE() }
     }
-    byApp[app][phase] = j
+    byApp[app][phase].push(j)
   }
 
   return Object.values(byApp).map((entry) => {
-    // Resolve SLA targets per app + phase (readiness always gets null)
+    // Resolve SLA per app + phase
     function getSLA(phase) {
       if (phase === 'readiness') return null
       const perApp = slaConfig.perApp?.[entry.app]
       if (perApp?.[phase] != null) return Number(perApp[phase])
-      return slaConfig[phase] != null ? Number(slaConfig[phase]) : (phase === 'switchover' ? 30 : 60)
+      if (slaConfig[phase] != null) return Number(slaConfig[phase])
+      // Defaults
+      if (phase === 'switchover' || phase === 'failover')  return 30
+      if (phase === 'switchback' || phase === 'failback')  return 60
+      return 30
     }
 
     const phases = {
-      switchover: buildPhase(entry.switchover, 'switchover', getSLA('switchover')),
-      switchback: buildPhase(entry.switchback, 'switchback', getSLA('switchback')),
-      readiness:  buildPhase(entry.readiness,  'readiness',  null),
+      switchover: buildPhaseFromJobs(entry.switchover, 'switchover', getSLA('switchover')),
+      switchback: buildPhaseFromJobs(entry.switchback, 'switchback', getSLA('switchback')),
+      readiness:  buildPhaseFromJobs(entry.readiness,  'readiness',  null),
+      failover:   buildPhaseFromJobs(entry.failover,   'failover',   getSLA('failover')),
+      failback:   buildPhaseFromJobs(entry.failback,   'failback',   getSLA('failback')),
     }
 
-    const allPhases    = Object.values(phases).filter(Boolean)
-    const totalPhases  = allPhases.length
-    const completedPh  = allPhases.filter((p) => p.status === 'Ended OK').length
-    const failedPh     = allPhases.filter((p) => p.status === 'Ended Not OK').length
-    const executingPh  = allPhases.filter((p) => p.status === 'Executing').length
+    const allPhases   = Object.values(phases).filter(Boolean)
+    const totalPhases = allPhases.length
+    const completedPh = allPhases.filter((p) => p.status === 'Ended OK').length
+    const failedPh    = allPhases.filter((p) => p.status === 'Ended Not OK').length
+    const executingPh = allPhases.filter((p) => p.status === 'Executing').length
 
-    // Health is only assessed on SLA phases (switchover + switchback)
-    const slaPhases    = allPhases.filter((p) => p.hasSLA)
-    const breachedPh   = slaPhases.filter((p) => p.rtoBreached).length
-    const atRiskPh     = slaPhases.filter((p) => p.rtoStatus === 'At Risk').length
+    // Health only from SLA phases
+    const slaPhases   = allPhases.filter((p) => p.hasSLA)
+    const breachedPh  = slaPhases.filter((p) => p.rtoBreached).length
+    const atRiskPh    = slaPhases.filter((p) => p.rtoStatus === 'At Risk').length
 
     const overallStatus =
       failedPh > 0                   ? 'Failed'
@@ -201,8 +271,9 @@ function rawJobsToDROperations(statuses, slaConfig = {}) {
       : 'Pending'
 
     const drillHealth =
-      breachedPh > 0 ? 'Breached'
-      : atRiskPh > 0 ? 'At Risk'
+      failedPh > 0   ? 'Failed'
+      : breachedPh > 0 ? 'Breached'
+      : atRiskPh > 0   ? 'At Risk'
       : 'On Track'
 
     const completionPct =
@@ -250,8 +321,8 @@ function mapJob(raw) {
     host:      raw.host,
     app:       raw.application || '',
     subApp:    raw.subApplication || '',
-    startTime: ctmIso(raw.startTime),
-    endTime:   ctmIso(raw.endTime),
+    startTime: raw.startTime ? parseCtmTime(raw.startTime)?.toISOString() : null,
+    endTime:   raw.endTime   ? parseCtmTime(raw.endTime)?.toISOString()   : null,
     logURI:    raw.logURI,
   }
 }
@@ -268,28 +339,27 @@ export async function fetchEnvComparison(jobs) {
   if (USE_MOCK) {
     return new Promise((r) => setTimeout(() => r(mockEnvComparison), 450))
   }
-  const active   = jobs.filter((j) => j.status === 'Executing').length
-  const ok       = jobs.filter((j) => j.status === 'Ended OK').length
-  const failed   = jobs.filter((j) => j.status === 'Ended Not OK').length
-  const waiting  = jobs.filter((j) => j.status.startsWith('Wait')).length
-  const server   = jobs[0]?.server || 'IN01'
+  const active  = jobs.filter((j) => j.status === 'Executing').length
+  const ok      = jobs.filter((j) => j.status === 'Ended OK').length
+  const failed  = jobs.filter((j) => j.status === 'Ended Not OK').length
+  const server  = jobs[0]?.server || 'IN01'
   return {
     prod: { ...mockEnvComparison.prod, label: 'Production (reference)' },
     dr: {
-      label: 'Live — Control-M SaaS',
-      servers: [server],
-      status: 'Active',
-      activeJobs: active,
-      completedJobs: ok,
-      failedJobs: failed,
-      waitingJobs: waiting,
+      label:           'Live — Control-M SaaS',
+      servers:         [server],
+      status:          'Active',
+      activeJobs:      active,
+      completedJobs:   ok,
+      failedJobs:      failed,
+      waitingJobs:     0,
       agentsConnected: 9,
-      agentsTotal: 10,
-      lastSync: new Date().toISOString(),
-      version: '9.21.x (SaaS)',
-      uptime: 'Managed SaaS',
-      avgJobDuration: '—',
-      slaCompliance: jobs.length > 0 ? +((ok / jobs.length) * 100).toFixed(1) : 0,
+      agentsTotal:     10,
+      lastSync:        new Date().toISOString(),
+      version:         '9.21.x (SaaS)',
+      uptime:          'Managed SaaS',
+      avgJobDuration:  '—',
+      slaCompliance:   jobs.length > 0 ? +((ok / jobs.length) * 100).toFixed(1) : 0,
     },
   }
 }

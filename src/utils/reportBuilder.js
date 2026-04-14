@@ -66,6 +66,8 @@ export function buildReportRows(operations) {
       { key: 'switchover', label: 'Switchover' },
       { key: 'switchback', label: 'Switchback' },
       { key: 'readiness',  label: 'Readiness'  },
+      { key: 'failover',   label: 'Failover'   },
+      { key: 'failback',   label: 'Failback'   },
     ]
 
     for (const { key, label } of phaseEntries) {
@@ -122,7 +124,8 @@ export function buildReportRows(operations) {
         'CTM Folder':                           ph.folder ?? '',
         'CTM Server':                           op.server,
         'Team Participation':                   '',
-        'Remarks':                              key === 'readiness' ? 'No SLA target for Readiness phase' : '',
+        'Remarks':                              key === 'readiness' ? 'No SLA target for Readiness phase'
+                                                : (ph.failedSteps > 0 ? `${ph.failedSteps} step(s) failed — check CTM output log` : ''),
       })
     }
   }

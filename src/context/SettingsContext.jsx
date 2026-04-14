@@ -19,6 +19,8 @@ export const DEFAULT_SETTINGS = {
   sla: {
     switchover: 30,
     switchback: 60,
+    failover:   30,
+    failback:   60,
     perApp: {},
   },
   timezone: (() => {
@@ -85,7 +87,11 @@ export function SettingsProvider({ children }) {
     const perApp = settings.sla?.perApp?.[app]
     if (perApp?.[phase] != null) return Number(perApp[phase])
     const global = settings.sla?.[phase]
-    return global != null ? Number(global) : (phase === 'switchover' ? 30 : 60)
+    if (global != null) return Number(global)
+    // Defaults
+    if (phase === 'switchover' || phase === 'failover')  return 30
+    if (phase === 'switchback' || phase === 'failback')  return 60
+    return 30
   }, [settings.sla])
 
   /** Toggle an app in the pinnedApps list */

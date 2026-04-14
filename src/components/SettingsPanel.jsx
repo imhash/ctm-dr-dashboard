@@ -157,6 +157,8 @@ function SlaSection({ settings, saveSla, appNames }) {
 
   const globalSW  = settings.sla?.switchover ?? 30
   const globalSB  = settings.sla?.switchback ?? 60
+  const globalFO  = settings.sla?.failover   ?? 30
+  const globalFB  = settings.sla?.failback   ?? 60
   const perApp    = settings.sla?.perApp    ?? {}
 
   function updateGlobal(phase, val) {
@@ -176,7 +178,7 @@ function SlaSection({ settings, saveSla, appNames }) {
   function addApp() {
     const name = newApp.trim()
     if (!name || perApp[name]) return
-    saveSla({ perApp: { ...perApp, [name]: { switchover: globalSW, switchback: globalSB } } })
+    saveSla({ perApp: { ...perApp, [name]: { switchover: globalSW, switchback: globalSB, failover: globalFO, failback: globalFB } } })
     setNewApp('')
   }
 
@@ -186,14 +188,14 @@ function SlaSection({ settings, saveSla, appNames }) {
       <div className="flex items-start gap-2 mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
         <AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
         <p className="text-xs text-amber-300">
-          <strong>Readiness</strong> phase has no SLA target by design — it is excluded from all RTO calculations.
+          <strong>Readiness</strong> phase has no SLA target — excluded from all RTO calculations.
         </p>
       </div>
 
       {/* Global defaults */}
       <div className="mb-5">
         <p className={`text-xs font-medium mb-2 ${t.textSub}`}>Global Defaults</p>
-        <div className="flex gap-6 flex-wrap">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <div>
             <FieldLabel>Switchover SLA (min)</FieldLabel>
             <NumInput value={globalSW} onChange={(v) => updateGlobal('switchover', v)} />
@@ -202,6 +204,14 @@ function SlaSection({ settings, saveSla, appNames }) {
             <FieldLabel>Switchback SLA (min)</FieldLabel>
             <NumInput value={globalSB} onChange={(v) => updateGlobal('switchback', v)} />
           </div>
+          <div>
+            <FieldLabel>Failover SLA (min)</FieldLabel>
+            <NumInput value={globalFO} onChange={(v) => updateGlobal('failover', v)} />
+          </div>
+          <div>
+            <FieldLabel>Failback SLA (min)</FieldLabel>
+            <NumInput value={globalFB} onChange={(v) => updateGlobal('failback', v)} />
+          </div>
         </div>
       </div>
 
@@ -209,11 +219,11 @@ function SlaSection({ settings, saveSla, appNames }) {
       <div>
         <p className={`text-xs font-medium mb-2 ${t.textSub}`}>Per-Application Overrides</p>
         {Object.keys(perApp).length > 0 && (
-          <div className={`rounded-lg border ${t.border} overflow-hidden mb-3`}>
-            <table className="w-full text-xs">
+          <div className={`rounded-lg border ${t.border} overflow-hidden mb-3 overflow-x-auto`}>
+            <table className="w-full text-xs min-w-[480px]">
               <thead className={`${t.tableHead}`}>
                 <tr>
-                  {['Application', 'Switchover (min)', 'Switchback (min)', ''].map((h) => (
+                  {['Application', 'Switchover', 'Switchback', 'Failover', 'Failback', ''].map((h) => (
                     <th key={h} className={`text-left px-3 py-2 font-medium ${t.textMuted}`}>{h}</th>
                   ))}
                 </tr>
@@ -221,15 +231,15 @@ function SlaSection({ settings, saveSla, appNames }) {
               <tbody>
                 {Object.entries(perApp).map(([app, vals]) => (
                   <tr key={app} className={`border-t ${t.border}`}>
-                    <td className={`px-3 py-2 font-medium ${t.textSub}`}>{app}</td>
-                    <td className="px-3 py-1.5">
-                      <NumInput value={vals.switchover ?? globalSW}
-                        onChange={(v) => updatePerApp(app, 'switchover', v)} />
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <NumInput value={vals.switchback ?? globalSB}
-                        onChange={(v) => updatePerApp(app, 'switchback', v)} />
-                    </td>
+                    <td className={`px-3 py-2 font-medium ${t.textSub} whitespace-nowrap`}>{app}</td>
+                    {['switchover', 'switchback', 'failover', 'failback'].map((ph) => (
+                      <td key={ph} className="px-3 py-1.5">
+                        <NumInput
+                          value={vals[ph] ?? settings.sla?.[ph] ?? 30}
+                          onChange={(v) => updatePerApp(app, ph, v)}
+                        />
+                      </td>
+                    ))}
                     <td className="px-3 py-1.5">
                       <button onClick={() => removePerApp(app)}
                         className="p-1 rounded text-red-400 hover:text-red-300">
