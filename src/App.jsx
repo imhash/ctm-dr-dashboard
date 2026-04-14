@@ -4,6 +4,7 @@ import SummaryCards      from './components/SummaryCards'
 import AppDRCard         from './components/AppDRCard'
 import RTOValidation     from './components/RTOValidation'
 import AgentConnectivity from './components/AgentConnectivity'
+import AgentTopology     from './components/AgentTopology'
 import LoginPage         from './components/LoginPage'
 import DrillReportModal  from './components/DrillReportModal'
 import SettingsPanel     from './components/SettingsPanel'
@@ -18,6 +19,7 @@ function Dashboard({ onLogout }) {
   const t = useT()
   const { settings } = useSettings()
 
+  const [activeView,   setActiveView]   = useState('dashboard')  // 'dashboard' | 'topology'
   const [loading,      setLoading]      = useState(true)
   const [operations,   setOperations]   = useState([])
   const [agents,       setAgents]       = useState([])
@@ -31,7 +33,6 @@ function Dashboard({ onLogout }) {
     setLoading(true)
     setError(null)
     try {
-      // Pass current SLA config so buildPhase uses user-defined deadlines
       const [ops, agt] = await Promise.all([
         fetchDROperations(settings.sla),
         fetchAgents(),
@@ -55,22 +56,31 @@ function Dashboard({ onLogout }) {
     return () => clearInterval(id)
   }, [autoRefresh, loadAll])
 
-  // Sort operations: pinned apps first (in pin order), then alphabetical
+  // Sort operations: pinned first, then alphabetical
   const pinnedApps = settings.pinnedApps || []
   const sortedOps  = [...operations].sort((a, b) => {
     const ai = pinnedApps.indexOf(a.app)
     const bi = pinnedApps.indexOf(b.app)
-    if (ai !== -1 && bi !== -1) return ai - bi   // both pinned: preserve pin order
-    if (ai !== -1) return -1                      // a pinned, b not
-    if (bi !== -1) return 1                       // b pinned, a not
-    return a.app.localeCompare(b.app)             // neither pinned: alphabetical
+    if (ai !== -1 && bi !== -1) return ai - bi
+    if (ai !== -1) return -1
+    if (bi !== -1) return 1
+    return a.app.localeCompare(b.app)
   })
 
   const appNames = operations.map((o) => o.app)
 
+  // ── Topology full-page view ──
+  if (activeView === 'topology') {
+    return (
+      <AgentTopology
+        agents={agents}
+        onClose={() => setActiveView('dashboard')}
+      />
+    )
+  }
+
   return (
     <div className={`min-h-screen flex flex-col ${t.pageBg}`}>
-      {/* ── Modals / Panels ── */}
       {showReport && (
         <DrillReportModal operations={operations} onClose={() => setShowReport(false)} />
       )}
@@ -87,6 +97,7 @@ function Dashboard({ onLogout }) {
         onLogout={onLogout}
         onReport={() => setShowReport(true)}
         onSettings={() => setShowSettings(true)}
+        onTopology={() => setActiveView('topology')}
         hasData={operations.length > 0}
       />
 
@@ -105,11 +116,8 @@ function Dashboard({ onLogout }) {
         </div>
       ) : (
         <main className="flex-1 overflow-auto">
-
-          {/* ── KPI Summary ── */}
           <SummaryCards operations={operations} />
 
-          {/* ── Application DR Cards ── */}
           <section className="px-6 pb-4">
             <div className="flex items-center gap-2 mb-3 flex-wrap">
               <h2 className={`text-sm font-semibold ${t.text}`}>Application DR Status</h2>
@@ -137,18 +145,15 @@ function Dashboard({ onLogout }) {
             )}
           </section>
 
-          {/* ── RTO Validation (Switchover + Switchback only) ── */}
           {operations.length > 0 && (
             <section className="px-6 pb-4">
               <RTOValidation operations={operations} />
             </section>
           )}
 
-          {/* ── Agent Connectivity ── */}
           <section className="px-6 pb-6">
             <AgentConnectivity agents={agents} />
           </section>
-
         </main>
       )}
     </div>

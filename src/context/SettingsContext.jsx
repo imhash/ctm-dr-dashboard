@@ -26,9 +26,14 @@ export const DEFAULT_SETTINGS = {
   timezone: (() => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'UTC' }
   })(),
-  pinnedApps: [],
+  pinnedApps:   [],
   customerLogo: null,
   customerName: '',
+  agentGroups:  {},      // { [agentName]: { app, zone:'prod'|'dr', ip } }
+  topology: {
+    showUnassigned: true,
+    refreshSecs:    30,
+  },
 }
 
 function loadSettings() {
@@ -44,7 +49,9 @@ function loadSettings() {
         ...(parsed.sla || {}),
         perApp: parsed.sla?.perApp || {},
       },
-      pinnedApps: parsed.pinnedApps || [],
+      pinnedApps:  parsed.pinnedApps  || [],
+      agentGroups: parsed.agentGroups || {},
+      topology:    { ...DEFAULT_SETTINGS.topology, ...(parsed.topology || {}) },
     }
   } catch {
     return DEFAULT_SETTINGS

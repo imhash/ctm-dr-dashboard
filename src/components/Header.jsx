@@ -1,4 +1,4 @@
-import { RefreshCw, Shield, Clock, Sun, Moon, FileSpreadsheet, Settings } from 'lucide-react'
+import { RefreshCw, Shield, Clock, Sun, Moon, FileSpreadsheet, Settings, Network } from 'lucide-react'
 import { useTheme, useT } from '../context/ThemeContext'
 import { useSettings } from '../context/SettingsContext'
 
@@ -6,7 +6,7 @@ const IS_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
 export default function Header({
   lastRefresh, autoRefresh, onToggleAuto,
-  onRefresh, loading, onLogout, onReport, hasData, onSettings,
+  onRefresh, loading, onLogout, onReport, hasData, onSettings, onTopology,
 }) {
   const { dark, toggle } = useTheme()
   const t = useT()
@@ -94,6 +94,16 @@ export default function Header({
             className={`p-1.5 rounded-lg border transition-colors ${t.card} ${t.border} ${t.textMuted} hover:opacity-80`}
           >
             {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+
+          {/* Agent Topology (NOC View) */}
+          <button
+            onClick={onTopology}
+            title="Agent Topology — NOC View"
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors ${t.card} ${t.border} ${t.textMuted} hover:opacity-80`}
+          >
+            <Network className="w-4 h-4" />
+            <span className="hidden sm:inline">Topology</span>
           </button>
 
           {/* Settings */}
