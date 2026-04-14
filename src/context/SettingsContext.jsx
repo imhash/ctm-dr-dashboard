@@ -29,11 +29,9 @@ export const DEFAULT_SETTINGS = {
   pinnedApps:   [],
   customerLogo: null,
   customerName: '',
-  agentGroups:  {},      // { [agentName]: { app, zone:'prod'|'dr', ip } }
-  topology: {
-    showUnassigned: true,
-    refreshSecs:    30,
-  },
+  agentGroups:      {},   // legacy — kept for compatibility
+  topology: { showUnassigned: true, refreshSecs: 30 },
+  businessServices: [],  // [{ id, name, criticality, color, description, prod:[{id,server,ip,datacenter,agents:[{name,ip}]}], dr:[...] }]
 }
 
 function loadSettings() {
@@ -50,8 +48,9 @@ function loadSettings() {
         perApp: parsed.sla?.perApp || {},
       },
       pinnedApps:  parsed.pinnedApps  || [],
-      agentGroups: parsed.agentGroups || {},
-      topology:    { ...DEFAULT_SETTINGS.topology, ...(parsed.topology || {}) },
+      agentGroups:      parsed.agentGroups      || {},
+      topology:         { ...DEFAULT_SETTINGS.topology, ...(parsed.topology || {}) },
+      businessServices: parsed.businessServices || [],
     }
   } catch {
     return DEFAULT_SETTINGS

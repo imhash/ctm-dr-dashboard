@@ -4,7 +4,8 @@ import SummaryCards      from './components/SummaryCards'
 import AppDRCard         from './components/AppDRCard'
 import RTOValidation     from './components/RTOValidation'
 import AgentConnectivity from './components/AgentConnectivity'
-import AgentTopology     from './components/AgentTopology'
+import ServiceGraph      from './components/ServiceGraph'
+import ServiceConfigPage from './pages/ServiceConfigPage'
 import LoginPage         from './components/LoginPage'
 import DrillReportModal  from './components/DrillReportModal'
 import SettingsPanel     from './components/SettingsPanel'
@@ -15,11 +16,12 @@ import { fetchDROperations, fetchAgents } from './services/controlmApi'
 const REFRESH_MS  = 30_000
 const SESSION_KEY = 'ctm-session'
 
+// Views: 'dashboard' | 'topology' | 'service-config'
 function Dashboard({ onLogout }) {
   const t = useT()
   const { settings } = useSettings()
 
-  const [activeView,   setActiveView]   = useState('dashboard')  // 'dashboard' | 'topology'
+  const [activeView,   setActiveView]   = useState('dashboard')
   const [loading,      setLoading]      = useState(true)
   const [operations,   setOperations]   = useState([])
   const [agents,       setAgents]       = useState([])
@@ -56,7 +58,6 @@ function Dashboard({ onLogout }) {
     return () => clearInterval(id)
   }, [autoRefresh, loadAll])
 
-  // Sort operations: pinned first, then alphabetical
   const pinnedApps = settings.pinnedApps || []
   const sortedOps  = [...operations].sort((a, b) => {
     const ai = pinnedApps.indexOf(a.app)
@@ -69,16 +70,28 @@ function Dashboard({ onLogout }) {
 
   const appNames = operations.map((o) => o.app)
 
-  // ── Topology full-page view ──
-  if (activeView === 'topology') {
+  // ── Service Config full page ──
+  if (activeView === 'service-config') {
     return (
-      <AgentTopology
+      <ServiceConfigPage
         agents={agents}
-        onClose={() => setActiveView('dashboard')}
+        onClose={() => setActiveView('topology')}
       />
     )
   }
 
+  // ── Service Graph NOC view ──
+  if (activeView === 'topology') {
+    return (
+      <ServiceGraph
+        agents={agents}
+        onClose={() => setActiveView('dashboard')}
+        onConfig={() => setActiveView('service-config')}
+      />
+    )
+  }
+
+  // ── Main dashboard ──
   return (
     <div className={`min-h-screen flex flex-col ${t.pageBg}`}>
       {showReport && (
@@ -130,7 +143,6 @@ function Dashboard({ onLogout }) {
                 </span>
               )}
             </div>
-
             {sortedOps.length === 0 ? (
               <div className={`text-center py-16 text-sm ${t.textMuted}`}>
                 No DR operations found.<br />
@@ -166,9 +178,8 @@ export default function App() {
   })
 
   function handleLogin(creds) {
-    const s = { apiUrl: creds.apiUrl, loggedInAt: new Date().toISOString() }
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
-    setSession(s)
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ loggedInAt: new Date().toISOString() }))
+    setSession({ loggedInAt: new Date().toISOString() })
   }
 
   function handleLogout() {
