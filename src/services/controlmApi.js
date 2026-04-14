@@ -367,3 +367,20 @@ export async function fetchEnvComparison(jobs) {
 export async function fetchAgents() {
   return new Promise((r) => setTimeout(() => r(mockAgents), 420))
 }
+
+/**
+ * Fetch the output log for a specific job.
+ * CTM endpoint: GET /run/job/{jobId}/output  (returns plain text)
+ */
+export async function fetchJobOutput(jobId) {
+  if (!jobId) throw new Error('jobId is required')
+  const res = await fetch(`${BASE_URL}/run/job/${encodeURIComponent(jobId)}/output`, {
+    headers: { 'x-api-key': API_KEY },
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${text.slice(0, 200) || 'No output available'}`)
+  }
+  // CTM returns plain text for this endpoint
+  return res.text()
+}
