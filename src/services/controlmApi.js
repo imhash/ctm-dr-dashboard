@@ -241,51 +241,137 @@ function buildPhaseFromJobs(jobs, phase, slaTargetMins) {
 const DR_PHASES = new Set(['switchover', 'switchback', 'readiness', 'failover', 'failback'])
 
 const EMPTY_BY_PHASE = () => ({
-  switchover: [],
-  switchback: [],
-  readiness:  [],
-  failover:   [],
-  failback:   [],
+  switchover: { folder: null, steps: [] },
+  switchback: { folder: null, steps: [] },
+  readiness:  { folder: null, steps: [] },
+  failover:   { folder: null, steps: [] },
+  failback:   { folder: null, steps: [] },
 })
 
 /**
+ * BFS traversal: collect ALL executable leaf jobs inside a CTM folder.
+ *
+ * CTM folder hierarchy can be many levels deep:
+ *   DR Folder (subApplication=Switchover)
+ *     └─ Sub-folder (e.g. mha-AI-Vsphere-SRM-Test)
+ *          └─ Actual job
+ *
+ * The full status list is a flat array where each entry has a `folder` field
+ * pointing to its direct parent. We BFS from `rootFolderName` collecting only
+ * leaf-level executable jobs.
+ *
+ * @param {Map<string, Array>} childrenByFolder  - pre-built: folderName → [children]
+ * @param {string}             rootFolderName
+ * @returns {Array} executable job raw objects
+ */
+function collectLeafJobs(childrenByFolder, rootFolderName) {
+  const result  = []
+  const queue   = [rootFolderName]
+  const visited = new Set()
+
+  while (queue.length > 0) {
+    const name = queue.shift()
+    if (visited.has(name)) continue
+    visited.add(name)
+
+    const children = childrenByFolder.get(name) || []
+    for (const child of children) {
+      if (isExecutableJob(child)) {
+        result.push(child)
+      } else {
+        // Sub-folder: recurse into it
+        queue.push(child.name)
+      }
+    }
+  }
+
+  return result
+}
+
+/**
  * @param {Array}  statuses   — raw CTM job status array
- * @param {object} slaConfig  — { switchover, switchback, failover, failback, readiness: no SLA, perApp: {...} }
+ * @param {object} slaConfig  — { switchover, switchback, failover, failback, perApp: {...} }
  */
 function rawJobsToDROperations(statuses, slaConfig = {}) {
-  const drJobs = statuses.filter(
-    (j) => DR_PHASES.has((j.subApplication || '').toLowerCase())
+  // ── Step 1: Build a parent→children map for the entire status list ──
+  // childrenByFolder: folderName → [raw job objects whose .folder === folderName]
+  const childrenByFolder = new Map()
+  for (const j of statuses) {
+    const parent = j.folder || ''
+    if (!childrenByFolder.has(parent)) childrenByFolder.set(parent, [])
+    childrenByFolder.get(parent).push(j)
+  }
+
+  // ── Step 2: Find all TOP-LEVEL DR folder entries (have a DR subApplication) ──
+  // These are the workflow containers for each phase.
+  // A folder entry is identified by: type in FOLDER_TYPES OR name === folder (self-referencing)
+  // OR it's a direct entry with subApplication set at the folder level.
+  const drFolderEntries = statuses.filter(
+    (j) => DR_PHASES.has((j.subApplication || '').toLowerCase()) && !isExecutableJob(j)
+  )
+
+  // Also include executable jobs that directly have a DR subApplication
+  // (in case the DR job is a single job without a folder wrapper)
+  const drDirectJobs = statuses.filter(
+    (j) => DR_PHASES.has((j.subApplication || '').toLowerCase()) && isExecutableJob(j)
   )
 
   const byApp = {}
-  for (const j of drJobs) {
-    const app   = j.application || 'Unknown'
-    const phase = (j.subApplication || '').toLowerCase()
-    if (!byApp[app]) {
-      byApp[app] = { app, server: j.ctm, ...EMPTY_BY_PHASE() }
+
+  // Process folder-based phases
+  for (const folderEntry of drFolderEntries) {
+    const app   = folderEntry.application || 'Unknown'
+    const phase = (folderEntry.subApplication || '').toLowerCase()
+    if (!byApp[app]) byApp[app] = { app, server: folderEntry.ctm, ...EMPTY_BY_PHASE() }
+
+    // Keep the most recent folder entry (in case of multiple runs)
+    const existing = byApp[app][phase].folder
+    if (!existing || (folderEntry.startTime || '') > (existing.startTime || '')) {
+      byApp[app][phase].folder = folderEntry
     }
-    byApp[app][phase].push(j)
+
+    // BFS from this folder to collect all leaf executable jobs
+    const leafJobs = collectLeafJobs(childrenByFolder, folderEntry.name)
+    byApp[app][phase].steps.push(...leafJobs)
+  }
+
+  // Process direct (non-folder) DR jobs — add as steps if not already collected
+  for (const job of drDirectJobs) {
+    const app   = job.application || 'Unknown'
+    const phase = (job.subApplication || '').toLowerCase()
+    if (!byApp[app]) byApp[app] = { app, server: job.ctm, ...EMPTY_BY_PHASE() }
+
+    // Avoid duplicates (may already be captured as a leaf from a folder BFS)
+    const alreadyHave = byApp[app][phase].steps.some((s) => s.jobId === job.jobId)
+    if (!alreadyHave) byApp[app][phase].steps.push(job)
   }
 
   return Object.values(byApp).map((entry) => {
     // Resolve SLA per app + phase
-    function getSLA(phase) {
-      if (phase === 'readiness') return null
+    function getSLA(ph) {
+      if (ph === 'readiness') return null
       const perApp = slaConfig.perApp?.[entry.app]
-      if (perApp?.[phase] != null) return Number(perApp[phase])
-      if (slaConfig[phase] != null) return Number(slaConfig[phase])
-      // Defaults
-      if (phase === 'switchover' || phase === 'failover')  return 30
-      if (phase === 'switchback' || phase === 'failback')  return 60
+      if (perApp?.[ph] != null) return Number(perApp[ph])
+      if (slaConfig[ph]  != null) return Number(slaConfig[ph])
+      if (ph === 'switchover' || ph === 'failover')  return 30
+      if (ph === 'switchback' || ph === 'failback')  return 60
       return 30
     }
 
+    // Build a jobs array for each phase: [folderEntry?, ...leafSteps]
+    // buildPhaseFromJobs expects the full list so it can separate folder vs steps
+    function jobsForPhase(ph) {
+      const { folder, steps } = entry[ph]
+      if (!folder && steps.length === 0) return []
+      return folder ? [folder, ...steps] : steps
+    }
+
     const phases = {
-      switchover: buildPhaseFromJobs(entry.switchover, 'switchover', getSLA('switchover')),
-      switchback: buildPhaseFromJobs(entry.switchback, 'switchback', getSLA('switchback')),
-      readiness:  buildPhaseFromJobs(entry.readiness,  'readiness',  null),
-      failover:   buildPhaseFromJobs(entry.failover,   'failover',   getSLA('failover')),
-      failback:   buildPhaseFromJobs(entry.failback,   'failback',   getSLA('failback')),
+      switchover: buildPhaseFromJobs(jobsForPhase('switchover'), 'switchover', getSLA('switchover')),
+      switchback: buildPhaseFromJobs(jobsForPhase('switchback'), 'switchback', getSLA('switchback')),
+      readiness:  buildPhaseFromJobs(jobsForPhase('readiness'),  'readiness',  null),
+      failover:   buildPhaseFromJobs(jobsForPhase('failover'),   'failover',   getSLA('failover')),
+      failback:   buildPhaseFromJobs(jobsForPhase('failback'),   'failback',   getSLA('failback')),
     }
 
     const allPhases   = Object.values(phases).filter(Boolean)
