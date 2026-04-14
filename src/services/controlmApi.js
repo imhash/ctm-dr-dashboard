@@ -67,6 +67,22 @@ function diffMins(a, b) {
   return Math.round((b.getTime() - a.getTime()) / 60000)
 }
 
+// ---------- Job type helpers ----------
+
+// CTM container/folder types — these are workflow wrappers, NOT executable steps.
+// Individual job types (Job, Command, Script, OS, SAP, etc.) are the actual steps.
+const FOLDER_TYPES = new Set([
+  'folder', 'simplefolder', 'subfolder', 'smartfolder',
+])
+
+function isExecutableJob(raw) {
+  const type = (raw.type || '').toLowerCase()
+  // If no type info at all, check if the job name matches its own folder name
+  // (folder entries typically have name === folder in CTM status response)
+  if (!type) return raw.name !== raw.folder
+  return !FOLDER_TYPES.has(type)
+}
+
 // ---------- Step builder ----------
 // Converts a raw CTM job object into a step record (one row in PhaseStepReport)
 
@@ -111,8 +127,15 @@ function buildStep(raw) {
 function buildPhaseFromJobs(jobs, phase, slaTargetMins) {
   if (!jobs || jobs.length === 0) return null
 
+  // Separate folder/container entries from actual executable jobs
+  const folderEntries = jobs.filter((j) => !isExecutableJob(j))
+  const execJobs      = jobs.filter(isExecutableJob)
+
+  // Steps = only executable jobs; fall back to all if type info is absent
+  const stepJobs = execJobs.length > 0 ? execJobs : jobs
+
   // Build step records ordered chronologically
-  const steps = jobs
+  const steps = stepJobs
     .map(buildStep)
     .sort((a, b) => {
       const ta = a.startTimeISO ? new Date(a.startTimeISO).getTime() : 0
@@ -120,28 +143,40 @@ function buildPhaseFromJobs(jobs, phase, slaTargetMins) {
       return ta - tb
     })
 
-  // Aggregate step counts
+  // Aggregate step counts (based on executable steps only)
   const totalSteps     = steps.length
   const completedSteps = steps.filter((s) => s.status === 'Ended OK').length
   const failedSteps    = steps.filter((s) => s.status === 'Ended Not OK').length
   const runningSteps   = steps.filter((s) => s.status === 'Executing').length
 
-  // Derive overall phase status (worst-case wins)
+  // Overall phase status: worst-case across all jobs (folder entry may reflect overall)
+  const allFailed  = jobs.some((j) => j.status === 'Ended Not OK')
+  const anyRunning = jobs.some((j) => j.status === 'Executing')
+  const allOk      = jobs.every((j) => j.status === 'Ended OK')
   const overallStatus =
-    failedSteps > 0  ? 'Ended Not OK'
-    : runningSteps > 0 ? 'Executing'
-    : completedSteps === totalSteps ? 'Ended OK'
+    allFailed   ? 'Ended Not OK'
+    : anyRunning ? 'Executing'
+    : allOk      ? 'Ended OK'
     : jobs[0]?.status || 'Unknown'
 
-  // Phase timing: use earliest start and latest end across all steps
-  const starts = steps.map((s) => s.startTimeISO).filter(Boolean).sort()
-  const ends   = steps.map((s) => s.endTimeISO).filter(Boolean).sort()
-  const phaseStart = starts[0] ? new Date(starts[0]) : null
-  const phaseEnd   = ends[ends.length - 1] ? new Date(ends[ends.length - 1]) : null
+  // Phase timing: use folder entry if available (it carries the full workflow window),
+  // otherwise derive from individual step timings
+  const folderJob = folderEntries[0]
+  let phaseStart, phaseEnd
 
-  // Representative folder/jobId (first step)
-  const folder = steps[0]?.folder  || ''
-  const jobId  = steps[0]?.jobId   || ''
+  if (folderJob?.startTime) {
+    phaseStart = parseCtmTime(folderJob.startTime)
+    phaseEnd   = folderJob.endTime ? parseCtmTime(folderJob.endTime) : null
+  } else {
+    const starts = steps.map((s) => s.startTimeISO).filter(Boolean).sort()
+    const ends   = steps.map((s) => s.endTimeISO).filter(Boolean).sort()
+    phaseStart = starts[0] ? new Date(starts[0]) : null
+    phaseEnd   = ends[ends.length - 1] ? new Date(ends[ends.length - 1]) : null
+  }
+
+  // Folder name: prefer the folder entry's own name (= workflow folder name in CTM)
+  const folder = folderJob?.name || folderJob?.folder || steps[0]?.folder || ''
+  const jobId  = folderJob?.jobId || steps[0]?.jobId || ''
 
   const hasSLA      = slaTargetMins != null && phase !== 'readiness'
   const now         = new Date()
