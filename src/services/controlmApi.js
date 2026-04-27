@@ -73,6 +73,7 @@ function diffMins(a, b) {
 // Individual job types (Job, Command, Script, OS, SAP, etc.) are the actual steps.
 const FOLDER_TYPES = new Set([
   'folder', 'simplefolder', 'subfolder', 'smartfolder',
+  'sla',  // SLA service jobs are monitoring entries, not executable steps
 ])
 
 function isExecutableJob(raw) {
