@@ -62,7 +62,7 @@ app.put('/api/theme', async (req, res) => {
 })
 
 // CTM relay — reads target and server from .env, injects ?ctm= automatically
-app.all('/ctm-api/*', async (req, res) => {
+app.all('/ctm-api/*path', async (req, res) => {
   if (!CTM_API_URL) {
     return res.status(503).json({ error: 'CTM_API_URL not configured in .env' })
   }
