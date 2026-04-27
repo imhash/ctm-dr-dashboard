@@ -10,7 +10,8 @@ const DB_PATH = join(__dirname, 'db.json')
 
 const DEFAULT_DB = {
   settings: {
-    ctmServerUrl: 'https://se-preprod-aapi.us1.controlm.com',
+    ctmServerUrl: '',
+    ctmServer:    '',
     sla: {
       switchover: 30,
       switchback: 60,

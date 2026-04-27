@@ -6,32 +6,32 @@ import { useSettings } from '../context/SettingsContext'
 export default function LoginPage({ onLogin }) {
   const { dark, toggle } = useTheme()
   const t = useT()
-  const { settings } = useSettings()
+  const { settings, save } = useSettings()
 
   const dashboardTitle = settings.customerName?.trim() || 'Resiliency Dashboard'
 
-  const { save } = useSettings()
-
-  const [serverUrl, setServerUrl] = useState(settings.ctmServerUrl || 'https://se-preprod-aapi.us1.controlm.com')
-  const [apiKey,    setApiKey]    = useState('')
-  const [showKey,   setShowKey]   = useState(false)
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState(null)
-  const [success,   setSuccess]   = useState(false)
+  const [serverUrl,  setServerUrl]  = useState(settings.ctmServerUrl  || '')
+  const [ctmServer,  setCtmServer]  = useState(settings.ctmServer     || '')
+  const [apiKey,     setApiKey]     = useState('')
+  const [showKey,    setShowKey]    = useState(false)
+  const [loading,    setLoading]    = useState(false)
+  const [error,      setError]      = useState(null)
+  const [success,    setSuccess]    = useState(false)
 
   async function handleConnect(e) {
     e.preventDefault()
-    if (!serverUrl.trim()) { setError('Server URL is required.'); return }
-    if (!apiKey.trim())    { setError('API key is required.');    return }
+    if (!serverUrl.trim()) { setError('Server URL is required.');  return }
+    if (!ctmServer.trim()) { setError('Server name is required.'); return }
+    if (!apiKey.trim())    { setError('API key is required.');     return }
 
     setLoading(true)
     setError(null)
 
     try {
-      // Persist the chosen server URL before attempting auth
-      await save({ ctmServerUrl: serverUrl.trim() })
+      // Persist connection config before attempting auth
+      await save({ ctmServerUrl: serverUrl.trim(), ctmServer: ctmServer.trim() })
 
-      const res = await fetch(`/ctm-api/run/jobs/status?limit=1`, {
+      const res = await fetch(`/ctm-api/run/jobs/status?ctm=${encodeURIComponent(ctmServer.trim())}&limit=1`, {
         headers: { 'x-api-key': apiKey.trim() },
       })
       if (!res.ok) {
@@ -39,7 +39,7 @@ export default function LoginPage({ onLogin }) {
         throw new Error(body?.errors?.[0]?.message || `HTTP ${res.status}`)
       }
       setSuccess(true)
-      setTimeout(() => onLogin({ apiKey: apiKey.trim() }), 800)
+      setTimeout(() => onLogin({ apiKey: apiKey.trim(), ctmServer: ctmServer.trim() }), 800)
     } catch (err) {
       setError(`Authentication failed: ${err.message}`)
     } finally {
@@ -80,16 +80,31 @@ export default function LoginPage({ onLogin }) {
         {/* Form */}
         <form onSubmit={handleConnect} className="flex flex-col gap-5">
 
-          {/* CTM Server URL */}
+          {/* CTM API URL */}
           <div>
             <label className={`block text-xs font-medium mb-1.5 ${t.textSub}`}>
-              CTM Server URL
+              CTM API URL
             </label>
             <input
               type="url"
               value={serverUrl}
               onChange={(e) => { setServerUrl(e.target.value); setError(null) }}
               placeholder="https://your-ctm-server.com"
+              className={`w-full px-3 py-2.5 rounded-lg border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${t.inputBg} ${t.border} ${t.text} placeholder-slate-500`}
+              autoComplete="off"
+            />
+          </div>
+
+          {/* CTM Server Name */}
+          <div>
+            <label className={`block text-xs font-medium mb-1.5 ${t.textSub}`}>
+              CTM Server Name
+            </label>
+            <input
+              type="text"
+              value={ctmServer}
+              onChange={(e) => { setCtmServer(e.target.value); setError(null) }}
+              placeholder="e.g. PROD, IN01, DR01"
               className={`w-full px-3 py-2.5 rounded-lg border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${t.inputBg} ${t.border} ${t.text} placeholder-slate-500`}
               autoComplete="off"
             />

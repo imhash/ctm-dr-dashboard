@@ -11,7 +11,7 @@ import DrillReportModal  from './components/DrillReportModal'
 import SettingsPanel     from './components/SettingsPanel'
 import { useT }          from './context/ThemeContext'
 import { useSettings }   from './context/SettingsContext'
-import { fetchDROperations, fetchAgents } from './services/controlmApi'
+import { fetchDROperations, fetchAgents, setCredentials } from './services/controlmApi'
 
 const REFRESH_MS  = 30_000
 const SESSION_KEY = 'ctm-session'
@@ -178,6 +178,7 @@ export default function App() {
   })
 
   function handleLogin(creds) {
+    setCredentials({ apiKey: creds.apiKey, ctmServer: creds.ctmServer })
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({ loggedInAt: new Date().toISOString() }))
     setSession({ loggedInAt: new Date().toISOString() })
   }
