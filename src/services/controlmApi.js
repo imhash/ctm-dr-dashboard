@@ -41,7 +41,7 @@ async function ctmFetch(path, opts = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...opts,
     headers: {
-      'x-api-key': API_KEY,
+      'x-api-key': _apiKey,
       'Content-Type': 'application/json',
       ...(opts.headers || {}),
     },
