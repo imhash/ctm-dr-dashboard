@@ -3,7 +3,11 @@ import cors from 'cors'
 import { JSONFilePreset } from 'lowdb/node'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import https from 'https'
 import 'dotenv/config'
+
+// Allow self-signed / untrusted certs on customer CTM environments
+const httpsAgent = new https.Agent({ rejectUnauthorized: false })
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DB_PATH = join(__dirname, 'db.json')
@@ -80,21 +84,34 @@ app.all('/ctm-api/*path', async (req, res) => {
   console.log(`[CTM] ${req.method} ${url}`)
 
   try {
-    const headers = {}
-    if (req.headers['x-api-key'])    headers['x-api-key']    = req.headers['x-api-key']
-    if (req.headers['content-type']) headers['content-type'] = req.headers['content-type']
+    const parsed = new URL(url)
+    const body   = ['GET', 'HEAD'].includes(req.method) ? null : JSON.stringify(req.body)
 
-    const upstream = await fetch(url, {
-      method:  req.method,
-      headers,
-      body:    ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+    await new Promise((resolve, reject) => {
+      const options = {
+        hostname: parsed.hostname,
+        port:     parsed.port || 443,
+        path:     parsed.pathname + parsed.search,
+        method:   req.method,
+        agent:    httpsAgent,
+        headers: {
+          ...(req.headers['x-api-key']    ? { 'x-api-key':    req.headers['x-api-key']    } : {}),
+          ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}),
+          ...(body                        ? { 'content-length': Buffer.byteLength(body)    } : {}),
+        },
+      }
+
+      const proxy = https.request(options, (upstream) => {
+        res.status(upstream.statusCode)
+        if (upstream.headers['content-type']) res.setHeader('content-type', upstream.headers['content-type'])
+        upstream.pipe(res)
+        upstream.on('end', resolve)
+      })
+
+      proxy.on('error', reject)
+      if (body) proxy.write(body)
+      proxy.end()
     })
-
-    const text = await upstream.text()
-    res.status(upstream.status)
-    const ct = upstream.headers.get('content-type')
-    if (ct) res.setHeader('content-type', ct)
-    res.send(text)
   } catch (err) {
     console.error('[CTM] relay error:', err.message)
     res.status(502).json({ error: 'CTM relay error', detail: err.message })
