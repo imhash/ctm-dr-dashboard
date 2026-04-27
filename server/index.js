@@ -59,22 +59,23 @@ app.put('/api/theme', async (req, res) => {
   res.json({ theme: db.data.theme })
 })
 
-// Dynamic CTM proxy — target is whatever ctmServerUrl is saved in db.json
-app.use('/ctm-api', (req, res, next) => {
-  const target = db.data.settings.ctmServerUrl || 'https://se-preprod-aapi.us1.controlm.com'
-  createProxyMiddleware({
-    target,
-    changeOrigin: true,
-    secure: true,
-    pathRewrite: { '^/ctm-api': '/automation-api' },
-    on: {
-      error: (err, req, res) => {
-        console.error('CTM proxy error:', err.message)
-        res.status(502).json({ error: 'CTM proxy error', detail: err.message })
-      },
+// Dynamic CTM proxy — uses router fn so target is read fresh from db on every request
+app.use('/ctm-api', createProxyMiddleware({
+  router: () => db.data.settings.ctmServerUrl || 'https://se-preprod-aapi.us1.controlm.com',
+  changeOrigin: true,
+  secure: false,          // allow self-signed certs on customer environments
+  pathRewrite: { '^/ctm-api': '/automation-api' },
+  on: {
+    error: (err, req, res) => {
+      console.error('CTM proxy error:', err.message)
+      res.status(502).json({ error: 'CTM proxy error', detail: err.message })
     },
-  })(req, res, next)
-})
+    proxyReq: (proxyReq, req) => {
+      const target = db.data.settings.ctmServerUrl
+      console.log(`[CTM] ${req.method} ${target}/automation-api${req.path.replace('/ctm-api', '')}`)
+    },
+  },
+}))
 
 const PORT = process.env.API_PORT || 3001
 app.listen(PORT, () => console.log(`Settings API running on http://localhost:${PORT}`))
