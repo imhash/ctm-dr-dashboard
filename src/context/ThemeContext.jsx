@@ -2,15 +2,37 @@ import { createContext, useContext, useState, useEffect } from 'react'
 
 const ThemeContext = createContext({ dark: true, toggle: () => {} })
 
+async function fetchTheme() {
+  try {
+    const res = await fetch('/api/theme')
+    if (!res.ok) throw new Error()
+    const { theme } = await res.json()
+    return theme === 'dark'
+  } catch {
+    return true
+  }
+}
+
+async function persistTheme(dark) {
+  try {
+    await fetch('/api/theme', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: dark ? 'dark' : 'light' }),
+    })
+  } catch {}
+}
+
 export function ThemeProvider({ children }) {
-  const [dark, setDark] = useState(() => {
-    const saved = localStorage.getItem('ctm-theme')
-    return saved !== null ? saved === 'dark' : true
-  })
+  const [dark, setDark] = useState(true)
+
+  useEffect(() => {
+    fetchTheme().then(setDark)
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
-    localStorage.setItem('ctm-theme', dark ? 'dark' : 'light')
+    persistTheme(dark)
   }, [dark])
 
   return (

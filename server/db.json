@@ -1,0 +1,19 @@
+{
+  "settings": {
+    "sla": {
+      "switchover": 30,
+      "switchback": 60,
+      "failover": 30,
+      "failback": 60,
+      "perApp": {}
+    },
+    "timezone": "UTC",
+    "pinnedApps": [],
+    "customerLogo": null,
+    "customerName": "",
+    "agentGroups": {},
+    "topology": { "showUnassigned": true, "refreshSecs": 30 },
+    "businessServices": []
+  },
+  "theme": "dark"
+}

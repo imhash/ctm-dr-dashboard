@@ -1,5 +1,5 @@
 /**
- * SettingsContext — global user-configurable settings persisted in localStorage
+ * SettingsContext — global user-configurable settings persisted in JSON DB via /api/settings
  *
  * Settings:
  *   sla.switchover   — default SLA target for Switchover phase (minutes)
@@ -11,9 +11,7 @@
  *   customerName     — custom title shown in the header
  */
 
-import { createContext, useContext, useState, useCallback } from 'react'
-
-const SETTINGS_KEY = 'ctm-resiliency-settings'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 
 export const DEFAULT_SETTINGS = {
   sla: {
@@ -29,48 +27,62 @@ export const DEFAULT_SETTINGS = {
   pinnedApps:   [],
   customerLogo: null,
   customerName: '',
-  agentGroups:      {},   // legacy — kept for compatibility
+  agentGroups:      {},
   topology: { showUnassigned: true, refreshSecs: 30 },
-  businessServices: [],  // [{ id, name, criticality, color, description, prod:[{id,server,ip,datacenter,agents:[{name,ip}]}], dr:[...] }]
+  businessServices: [],
 }
 
-function loadSettings() {
+function mergeSettings(saved) {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...saved,
+    sla: {
+      ...DEFAULT_SETTINGS.sla,
+      ...(saved.sla || {}),
+      perApp: saved.sla?.perApp || {},
+    },
+    pinnedApps:       saved.pinnedApps       || [],
+    agentGroups:      saved.agentGroups      || {},
+    topology:         { ...DEFAULT_SETTINGS.topology, ...(saved.topology || {}) },
+    businessServices: saved.businessServices || [],
+  }
+}
+
+async function fetchSettings() {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY)
-    if (!raw) return DEFAULT_SETTINGS
-    const parsed = JSON.parse(raw)
-    return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
-      sla: {
-        ...DEFAULT_SETTINGS.sla,
-        ...(parsed.sla || {}),
-        perApp: parsed.sla?.perApp || {},
-      },
-      pinnedApps:  parsed.pinnedApps  || [],
-      agentGroups:      parsed.agentGroups      || {},
-      topology:         { ...DEFAULT_SETTINGS.topology, ...(parsed.topology || {}) },
-      businessServices: parsed.businessServices || [],
-    }
+    const res = await fetch('/api/settings')
+    if (!res.ok) throw new Error('fetch failed')
+    return mergeSettings(await res.json())
   } catch {
     return DEFAULT_SETTINGS
   }
 }
 
-function persist(obj) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj)) } catch {}
+async function persistSettings(obj) {
+  try {
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(obj),
+    })
+  } catch {}
 }
 
 const SettingsContext = createContext(null)
 
 export function SettingsProvider({ children }) {
-  const [settings, setSettings] = useState(loadSettings)
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    fetchSettings().then((s) => { setSettings(s); setLoaded(true) })
+  }, [])
 
   /** Shallow-merge a patch into settings and persist */
   const save = useCallback((patch) => {
     setSettings((prev) => {
       const next = { ...prev, ...patch }
-      persist(next)
+      persistSettings(next)
       return next
     })
   }, [])
@@ -79,7 +91,7 @@ export function SettingsProvider({ children }) {
   const saveSla = useCallback((slaPatch) => {
     setSettings((prev) => {
       const next = { ...prev, sla: { ...prev.sla, ...slaPatch } }
-      persist(next)
+      persistSettings(next)
       return next
     })
   }, [])
@@ -89,12 +101,11 @@ export function SettingsProvider({ children }) {
    * Returns null for 'readiness' (no SLA) and when no config exists.
    */
   const getSLA = useCallback((app, phase) => {
-    if (phase === 'readiness') return null   // Readiness has NO SLA
+    if (phase === 'readiness') return null
     const perApp = settings.sla?.perApp?.[app]
     if (perApp?.[phase] != null) return Number(perApp[phase])
     const global = settings.sla?.[phase]
     if (global != null) return Number(global)
-    // Defaults
     if (phase === 'switchover' || phase === 'failover')  return 30
     if (phase === 'switchback' || phase === 'failback')  return 60
     return 30
@@ -108,7 +119,7 @@ export function SettingsProvider({ children }) {
         ? prev.pinnedApps.filter((a) => a !== app)
         : [...prev.pinnedApps, app]
       const next = { ...prev, pinnedApps }
-      persist(next)
+      persistSettings(next)
       return next
     })
   }, [])
@@ -131,6 +142,8 @@ export function SettingsProvider({ children }) {
       timeZone: settings.timezone,
     })
   }, [settings.timezone])
+
+  if (!loaded) return null
 
   return (
     <SettingsContext.Provider value={{ settings, save, saveSla, getSLA, togglePin, fmtTime, fmtDate }}>

@@ -12,6 +12,10 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/ctm-api/, '/automation-api'),
       },
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: false,
+      },
     },
   },
 })
