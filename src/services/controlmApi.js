@@ -28,25 +28,17 @@ import {
 const BASE_URL = import.meta.env.VITE_CTM_API_URL || '/ctm-api'
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
-let _apiKey    = import.meta.env.VITE_CTM_API_KEY || ''
-let _ctmServer = ''
+let _apiKey = import.meta.env.VITE_CTM_API_KEY || ''
 
-/** Called once after login to set session credentials */
-export function setCredentials({ apiKey, ctmServer }) {
-  _apiKey    = apiKey    ?? _apiKey
-  _ctmServer = ctmServer ?? _ctmServer
+/** Called once after login to set the session API key */
+export function setCredentials({ apiKey }) {
+  _apiKey = apiKey ?? _apiKey
 }
 
 // ---------- Core fetch ----------
 
-function withServer(path) {
-  if (!_ctmServer) return path
-  const sep = path.includes('?') ? '&' : '?'
-  return `${path}${sep}ctm=${encodeURIComponent(_ctmServer)}`
-}
-
 async function ctmFetch(path, opts = {}) {
-  const res = await fetch(`${BASE_URL}${withServer(path)}`, {
+  const res = await fetch(`${BASE_URL}${path}`, {
     ...opts,
     headers: {
       'x-api-key': API_KEY,

@@ -178,7 +178,7 @@ export default function App() {
   })
 
   function handleLogin(creds) {
-    setCredentials({ apiKey: creds.apiKey, ctmServer: creds.ctmServer })
+    setCredentials({ apiKey: creds.apiKey })
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({ loggedInAt: new Date().toISOString() }))
     setSession({ loggedInAt: new Date().toISOString() })
   }
