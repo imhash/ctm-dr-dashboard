@@ -10,20 +10,27 @@ export default function LoginPage({ onLogin }) {
 
   const dashboardTitle = settings.customerName?.trim() || 'Resiliency Dashboard'
 
-  const [apiKey,  setApiKey]  = useState('')
-  const [showKey, setShowKey] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error,   setError]   = useState(null)
-  const [success, setSuccess] = useState(false)
+  const { save } = useSettings()
+
+  const [serverUrl, setServerUrl] = useState(settings.ctmServerUrl || 'https://se-preprod-aapi.us1.controlm.com')
+  const [apiKey,    setApiKey]    = useState('')
+  const [showKey,   setShowKey]   = useState(false)
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState(null)
+  const [success,   setSuccess]   = useState(false)
 
   async function handleConnect(e) {
     e.preventDefault()
-    if (!apiKey.trim()) { setError('API key is required.'); return }
+    if (!serverUrl.trim()) { setError('Server URL is required.'); return }
+    if (!apiKey.trim())    { setError('API key is required.');    return }
 
     setLoading(true)
     setError(null)
 
     try {
+      // Persist the chosen server URL before attempting auth
+      await save({ ctmServerUrl: serverUrl.trim() })
+
       const res = await fetch(`/ctm-api/run/jobs/status?limit=1`, {
         headers: { 'x-api-key': apiKey.trim() },
       })
@@ -72,6 +79,21 @@ export default function LoginPage({ onLogin }) {
 
         {/* Form */}
         <form onSubmit={handleConnect} className="flex flex-col gap-5">
+
+          {/* CTM Server URL */}
+          <div>
+            <label className={`block text-xs font-medium mb-1.5 ${t.textSub}`}>
+              CTM Server URL
+            </label>
+            <input
+              type="url"
+              value={serverUrl}
+              onChange={(e) => { setServerUrl(e.target.value); setError(null) }}
+              placeholder="https://your-ctm-server.com"
+              className={`w-full px-3 py-2.5 rounded-lg border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${t.inputBg} ${t.border} ${t.text} placeholder-slate-500`}
+              autoComplete="off"
+            />
+          </div>
 
           {/* API Key */}
           <div>

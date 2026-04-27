@@ -14,6 +14,7 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 
 export const DEFAULT_SETTINGS = {
+  ctmServerUrl: 'https://se-preprod-aapi.us1.controlm.com',
   sla: {
     switchover: 30,
     switchback: 60,

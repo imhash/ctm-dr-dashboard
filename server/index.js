@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { JSONFilePreset } from 'lowdb/node'
+import { createProxyMiddleware } from 'http-proxy-middleware'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
@@ -9,6 +10,7 @@ const DB_PATH = join(__dirname, 'db.json')
 
 const DEFAULT_DB = {
   settings: {
+    ctmServerUrl: 'https://se-preprod-aapi.us1.controlm.com',
     sla: {
       switchover: 30,
       switchback: 60,
@@ -55,6 +57,23 @@ app.put('/api/theme', async (req, res) => {
   db.data.theme = req.body.theme ?? db.data.theme
   await db.write()
   res.json({ theme: db.data.theme })
+})
+
+// Dynamic CTM proxy — target is whatever ctmServerUrl is saved in db.json
+app.use('/ctm-api', (req, res, next) => {
+  const target = db.data.settings.ctmServerUrl || 'https://se-preprod-aapi.us1.controlm.com'
+  createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    secure: true,
+    pathRewrite: { '^/ctm-api': '/automation-api' },
+    on: {
+      error: (err, req, res) => {
+        console.error('CTM proxy error:', err.message)
+        res.status(502).json({ error: 'CTM proxy error', detail: err.message })
+      },
+    },
+  })(req, res, next)
 })
 
 const PORT = process.env.API_PORT || 3001

@@ -6,16 +6,9 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/ctm-api': {
-        target: 'https://se-preprod-aapi.us1.controlm.com',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/ctm-api/, '/automation-api'),
-      },
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: false,
-      },
+      // Both /ctm-api and /api route through Express — CTM target is configured dynamically in db.json
+      '/ctm-api': { target: 'http://localhost:3001', changeOrigin: false },
+      '/api':     { target: 'http://localhost:3001', changeOrigin: false },
     },
   },
 })
