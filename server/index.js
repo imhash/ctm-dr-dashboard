@@ -65,6 +65,25 @@ app.put('/api/theme', async (req, res) => {
   res.json({ theme: db.data.theme })
 })
 
+// Debug: dump raw CTM jobs for a given application — GET /api/debug/ctm?app=ERP&apiKey=...
+app.get('/api/debug/ctm', async (req, res) => {
+  const { app: appFilter, apiKey } = req.query
+  if (!CTM_API_URL) return res.status(503).json({ error: 'CTM_API_URL not set' })
+  const path = `/automation-api/run/jobs/status?ctm=${CTM_SERVER}&limit=500`
+  const url  = `${CTM_API_URL}${path}`
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const parsed = new URL(url)
+      const opts = { hostname: parsed.hostname, port: parsed.port || 443, path: parsed.pathname + parsed.search, method: 'GET', agent: httpsAgent, headers: { 'x-api-key': apiKey || '' } }
+      const r = https.request(opts, (u) => { let b = ''; u.on('data', c => b += c); u.on('end', () => resolve(JSON.parse(b))) })
+      r.on('error', reject); r.end()
+    })
+    const statuses = data.statuses || []
+    const filtered = appFilter ? statuses.filter(j => (j.application || '').toLowerCase().includes(appFilter.toLowerCase())) : statuses
+    res.json({ total: statuses.length, matched: filtered.length, statuses: filtered })
+  } catch (err) { res.status(502).json({ error: err.message }) }
+})
+
 // CTM relay — reads target and server from .env, injects ?ctm= automatically
 app.all('/ctm-api/*path', async (req, res) => {
   if (!CTM_API_URL) {

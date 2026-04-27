@@ -430,7 +430,7 @@ export async function fetchDROperations(slaConfig = {}) {
   if (USE_MOCK) {
     return new Promise((r) => setTimeout(() => r(mockDROperations), 450))
   }
-  const data = await ctmFetch('/run/jobs/status')
+  const data = await ctmFetch('/run/jobs/status?limit=9999')
   return rawJobsToDROperations(data.statuses || [], slaConfig)
 }
 
@@ -455,7 +455,7 @@ function mapJob(raw) {
   }
 }
 
-export async function fetchJobs(limit = 500) {
+export async function fetchJobs(limit = 9999) {
   if (USE_MOCK) {
     return new Promise((r) => setTimeout(() => r(mockJobs), 400))
   }
