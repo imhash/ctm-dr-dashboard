@@ -80,21 +80,25 @@ export function SettingsProvider({ children }) {
     fetchSettings().then((s) => { setSettings(s); setLoaded(true) })
   }, [])
 
-  /** Shallow-merge a patch into settings and persist */
+  /** Shallow-merge a patch into settings and persist. Returns a promise that resolves when saved. */
   const save = useCallback((patch) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch }
-      persistSettings(next)
-      return next
+    return new Promise((resolve) => {
+      setSettings((prev) => {
+        const next = { ...prev, ...patch }
+        persistSettings(next).then(resolve)
+        return next
+      })
     })
   }, [])
 
   /** Deep-merge SLA patch */
   const saveSla = useCallback((slaPatch) => {
-    setSettings((prev) => {
-      const next = { ...prev, sla: { ...prev.sla, ...slaPatch } }
-      persistSettings(next)
-      return next
+    return new Promise((resolve) => {
+      setSettings((prev) => {
+        const next = { ...prev, sla: { ...prev.sla, ...slaPatch } }
+        persistSettings(next).then(resolve)
+        return next
+      })
     })
   }, [])
 
@@ -121,7 +125,7 @@ export function SettingsProvider({ children }) {
         ? prev.pinnedApps.filter((a) => a !== app)
         : [...prev.pinnedApps, app]
       const next = { ...prev, pinnedApps }
-      persistSettings(next)
+      persistSettings(next)   // fire-and-forget is fine for UI interactions
       return next
     })
   }, [])
